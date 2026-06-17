@@ -1,3 +1,4 @@
+import datetime
 from pathlib import Path
 
 from lxml.html import fromstring
@@ -19,7 +20,7 @@ def test_book_page_v2():
     assert book.title() == "Az érzőszívű mágus"
     assert book.series() == ["A Résháború", 1]
     assert book.publisher() == "Unikornis"
-    assert book.publication_date() == 1991
+    assert book.publication_date() == datetime.date(1991, 1, 1)
     assert book.isbn() == "9637519416"
     assert book.cover_urls() == [
         "https://moly.hu/system/covers/big/covers_4959.jpg?1395344202"
@@ -50,6 +51,62 @@ def test_book_page_v2():
 
     expected_description = "Pug, a varázsló inasa megmenti Carline hercegnőt a koboldoktól, ezért nemesi rangot kap… Barátját, Tomast, az utolsó aranysárkány gyönyörű aranykarddal és vérttel ajándékozza meg. A Királyságot több oldalról fenyegeti veszély: a harcias tsuranik és a Fekete Testvériség kegyetlen harcosai megpróbálják elfoglalni a földet, amelyet emberek, tündérek, törpék együtt védelmeznek. Pug egy Résen át másik térdimenzióba kerül, új személyiséget kap, de mágikus képességeivel felülkerekedik az elnyomó Nagy Emberek praktikáin…"
     assert book.description() == expected_description
+
+
+def test_series_range_index_uses_first_number():
+    # Omnibus editions list a volume range as the series index, e.g.
+    # "(Aliens 6-7.)". Calibre needs a single integer, so the first number of
+    # the range is used instead of crashing on int("6-7").
+    html = (
+        '<div id="content"><a class="action" href="/sorozatok/aliens">'
+        "(Aliens 6-7.)</a></div>"
+    )
+    book = Book(fromstring(html))
+
+    assert book.series() == ["Aliens", 6]
+
+
+def test_publication_date_full_from_tooltip():
+    # On current pages the year sits inside an <abbr> whose title holds the
+    # full publication date, e.g. "Megjelenés időpontja: 2025. szeptember 4.".
+    html = (
+        '<div id="content"><div class="items"><div>'
+        '<div><a href="/kiadok/szukits">Szukits</a>, Szeged, '
+        "<abbr title='Megjelenés időpontja: 2025. szeptember  4.' "
+        "class='tooltip'>2025</abbr></div>"
+        "<div>404 oldal · <strong>ISBN</strong>: 9789634978084</div>"
+        "</div></div></div>"
+    )
+    book = Book(fromstring(html))
+
+    assert book.publication_date() == datetime.date(2025, 9, 4)
+
+
+def test_publication_date_is_not_taken_from_isbn():
+    # When an edition has no publication year, the year must not be matched
+    # from the leading digits of the ISBN (e.g. "9789634978084" -> 9789).
+    html = (
+        '<div id="content"><div class="items"><div>'
+        '<div><a href="/kiadok/szukits">Szukits</a>, Szeged </div>'
+        "<div>500 oldal · <strong>ISBN</strong>: 9789634978084</div>"
+        "</div></div></div>"
+    )
+    book = Book(fromstring(html))
+
+    assert book.isbn() == "9789634978084"
+    assert book.publication_date() is None
+
+
+def test_publication_date_falls_back_to_bare_year():
+    html = (
+        '<div id="content"><div class="items"><div>'
+        '<div><a href="/kiadok/szukits">Szukits</a>, Szeged, 2025 </div>'
+        "<div>500 oldal · <strong>ISBN</strong>: 9789634978084</div>"
+        "</div></div></div>"
+    )
+    book = Book(fromstring(html))
+
+    assert book.publication_date() == datetime.date(2025, 1, 1)
 
 
 def test_book_with_empty_input():
