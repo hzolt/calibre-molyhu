@@ -64,7 +64,19 @@ class Molyhu(Source):
     def identify(self, log, result_queue, abort, title, authors, identifiers, timeout):
         max_books = self.prefs[self.KEY_MAX_BOOKS]
 
-        search_terms = moly_hu.generate_search_terms(title, authors, identifiers)
+        # Normalise the query with calibre's tokenizers, which drop leading
+        # articles, punctuation and ZWJ noise that can throw off moly.hu's
+        # search. The cleaned values are fed into the same term-builder so the
+        # ISBN -> author+title -> title fallback order is preserved.
+        clean_title = ' '.join(self.get_title_tokens(title)) if title else title
+        clean_authors = (
+            [' '.join(self.get_author_tokens(authors, only_first_author=True))]
+            if authors
+            else authors
+        )
+        search_terms = moly_hu.generate_search_terms(
+            clean_title, clean_authors, identifiers
+        )
         log.info(f'Search terms: {search_terms}')
 
         book_ids = []
