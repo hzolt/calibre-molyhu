@@ -149,6 +149,20 @@ def test_search_page():
     assert book_urls == expected_urls
 
 
+def test_search_page_no_results_ignores_widget_books():
+    # When moly.hu has no match (e.g. a foreign ISBN), the result list is empty
+    # but the page still renders sidebar widgets whose links reuse the
+    # "book_selector" class. Those widget books must not leak out as results.
+    page_content = fromstring(
+        Path(test_inputs_path / "search_page_no_results.htm").read_text(
+            encoding="utf-8"
+        )
+    )
+    book_urls = book_page_urls_from_seach_page(page_content)
+
+    assert book_urls == set()
+
+
 def test_search_author_and_title():
     authors = ["Raymond E. Feist", "Dummy Additional Author"]
     title = "Az ​érzőszívű mágus"
