@@ -1,3 +1,4 @@
+import datetime
 import re
 from urllib.parse import quote_plus
 
@@ -6,6 +7,47 @@ from lxml.html import fromstring
 
 DOMAIN = "https://moly.hu"
 BOOK_URL = DOMAIN + "/konyvek"
+
+HUNGARIAN_MONTHS = {
+    "január": 1,
+    "február": 2,
+    "március": 3,
+    "április": 4,
+    "május": 5,
+    "június": 6,
+    "július": 7,
+    "augusztus": 8,
+    "szeptember": 9,
+    "október": 10,
+    "november": 11,
+    "december": 12,
+}
+
+
+def parse_hungarian_date(text):
+    """Parse a moly.hu publication date into a ``datetime.date``.
+
+    Handles a full date ("2025. szeptember 4."), a year and month
+    ("2025. szeptember") and a bare year ("2025"). Missing parts default to
+    the first month/day. Returns ``None`` when no year can be found.
+    """
+    months = "|".join(HUNGARIAN_MONTHS)
+    full = re.search(rf"(\d{{4}})\.\s*({months})\s+(\d{{1,2}})", text, re.IGNORECASE)
+    if full:
+        return datetime.date(
+            int(full.group(1)),
+            HUNGARIAN_MONTHS[full.group(2).lower()],
+            int(full.group(3)),
+        )
+    year_month = re.search(rf"(\d{{4}})\.\s*({months})", text, re.IGNORECASE)
+    if year_month:
+        return datetime.date(
+            int(year_month.group(1)), HUNGARIAN_MONTHS[year_month.group(2).lower()], 1
+        )
+    year = re.search(r"(?<!\d)(1\d{3}|20\d{2})(?!\d)", text)
+    if year:
+        return datetime.date(int(year.group(1)), 1, 1)
+    return None
 
 
 def generate_search_terms(title, authors, identifiers):
@@ -123,13 +165,22 @@ class Book:
         return None
 
     def publication_date(self):
-        date_str = self._publication_date(
-            '//*[@id="content"]//*[@class="items"]/div/div[1]/text()'
-        ) or self._publication_date(
-            '//*[@id="content"]//*[@class="items"]/div/div[2]/text()'
+        # The edition line exposes the full publication date in the tooltip of
+        # the "Megjelenés időpontja:" abbreviation, e.g.
+        # <abbr title="Megjelenés időpontja: 2025. szeptember 4.">2025</abbr>.
+        titles = self._xml_root.xpath(
+            '//*[@id="content"]//*[@class="items"]//abbr/@title'
         )
-        if date_str:
-            return int(date_str)
+        for title in titles:
+            if "Megjelenés időpontja" in title:
+                date = parse_hungarian_date(title)
+                if date:
+                    return date
+        # Fallback for editions that only expose a bare year on the edition
+        # line (older layouts where the year is plain text, not a tooltip).
+        return self._publication_date(
+            '//*[@id="content"]//*[@class="items"]//text()'
+        )
 
     def _publication_date(self, xpath):
         publication_node = self._xml_root.xpath(xpath)
@@ -140,7 +191,7 @@ class Book:
             # whenever the edition has no year, yielding a bogus pubdate.
             match = re.search(r"(?<!\d)(1\d{3}|20\d{2})(?!\d)", publication_value)
             if match:
-                return int(match.group(1))
+                return datetime.date(int(match.group(1)), 1, 1)
         return None
 
     def isbn(self):

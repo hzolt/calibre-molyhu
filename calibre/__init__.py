@@ -19,7 +19,8 @@ def book_to_metadata(book) -> Metadata:
     metadata.tags = book.tags()
     metadata.languages = book.languages()
     metadata.publisher = book.publisher()
-    metadata.pubdate = datetime.datetime(book.publication_date(), 1, 1)
+    if pubdate := book.publication_date():
+        metadata.pubdate = datetime.datetime(pubdate.year, pubdate.month, pubdate.day)
     metadata.rating = book.rating()
     if book.series():
         metadata.series = book.series()[0]

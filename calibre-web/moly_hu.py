@@ -33,7 +33,7 @@ def book_to_metadata(book: moly_hu.Book, source_info: MetaSourceInfo, locale) ->
         metadata.identifiers['isbn'] = book.isbn()
     metadata.publisher = book.publisher() or ''
     if pubdate := book.publication_date():
-        metadata.publishedDate = datetime(pubdate, 1, 1).strftime('%Y-%m-%d')
+        metadata.publishedDate = pubdate.strftime('%Y-%m-%d')
     metadata.rating = book.rating() or 0
     metadata.languages = parse_languages(book.languages(), locale)
     metadata.tags = book.tags()
