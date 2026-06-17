@@ -96,10 +96,13 @@ class Book:
         if series[1] == "kiadás":
             return None
         try:
-            # FIXME(crash): what to do if the index is '1-2' but has to be an int?
             series[1] = int(series[1])
         except Exception:
-            series[1] = 1
+            # The index can be a range like "1-2" or "6-7" (omnibus
+            # editions). Calibre needs a single integer, so fall back to the
+            # first number in the range, or 1 if there is no number at all.
+            match = re.match(r"\d+", series[1])
+            series[1] = int(match.group()) if match else 1
 
         return series
 

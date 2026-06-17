@@ -52,6 +52,19 @@ def test_book_page_v2():
     assert book.description() == expected_description
 
 
+def test_series_range_index_uses_first_number():
+    # Omnibus editions list a volume range as the series index, e.g.
+    # "(Aliens 6-7.)". Calibre needs a single integer, so the first number of
+    # the range is used instead of crashing on int("6-7").
+    html = (
+        '<div id="content"><a class="action" href="/sorozatok/aliens">'
+        "(Aliens 6-7.)</a></div>"
+    )
+    book = Book(fromstring(html))
+
+    assert book.series() == ["Aliens", 6]
+
+
 def test_book_with_empty_input():
     book = Book(fromstring("dummy data"))
 
