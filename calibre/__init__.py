@@ -1,6 +1,7 @@
 from queue import Empty, Queue
 import datetime
 
+from calibre.utils.date import utc_tz
 from calibre.utils.cleantext import clean_ascii_chars
 from calibre.ebooks.metadata.sources.base import Source, Option
 from calibre.ebooks.metadata.book.base import Metadata
@@ -20,7 +21,11 @@ def book_to_metadata(book) -> Metadata:
     metadata.languages = book.languages()
     metadata.publisher = book.publisher()
     if pubdate := book.publication_date():
-        metadata.pubdate = datetime.datetime(pubdate.year, pubdate.month, pubdate.day)
+        # Build a timezone-aware datetime: calibre converts naive pubdates
+        # through the local timezone, which can shift the stored date by a day.
+        metadata.pubdate = datetime.datetime(
+            pubdate.year, pubdate.month, pubdate.day, tzinfo=utc_tz
+        )
     metadata.rating = book.rating()
     if book.series():
         metadata.series = book.series()[0]
