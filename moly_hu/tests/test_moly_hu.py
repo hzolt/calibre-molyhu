@@ -65,6 +65,33 @@ def test_series_range_index_uses_first_number():
     assert book.series() == ["Aliens", 6]
 
 
+def test_publication_date_is_not_taken_from_isbn():
+    # When an edition has no publication year, the year must not be matched
+    # from the leading digits of the ISBN (e.g. "9789634978084" -> 9789).
+    html = (
+        '<div id="content"><div class="items"><div>'
+        '<div><a href="/kiadok/szukits">Szukits</a>, Szeged </div>'
+        "<div>500 oldal · <strong>ISBN</strong>: 9789634978084</div>"
+        "</div></div></div>"
+    )
+    book = Book(fromstring(html))
+
+    assert book.isbn() == "9789634978084"
+    assert book.publication_date() is None
+
+
+def test_publication_date_parsed_from_edition_line():
+    html = (
+        '<div id="content"><div class="items"><div>'
+        '<div><a href="/kiadok/szukits">Szukits</a>, Szeged, 2025 </div>'
+        "<div>500 oldal · <strong>ISBN</strong>: 9789634978084</div>"
+        "</div></div></div>"
+    )
+    book = Book(fromstring(html))
+
+    assert book.publication_date() == 2025
+
+
 def test_book_with_empty_input():
     book = Book(fromstring("dummy data"))
 

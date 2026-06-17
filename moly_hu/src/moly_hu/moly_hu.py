@@ -134,9 +134,13 @@ class Book:
     def _publication_date(self, xpath):
         publication_node = self._xml_root.xpath(xpath)
         for publication_value in publication_node:
-            match = re.search(r"(\d{4})", publication_value)
+            # Match a plausible publication year (1000-2099) that is not part
+            # of a longer number. Without the digit guards a bare "\d{4}" would
+            # match the leading digits of an ISBN (e.g. "9789634978084" -> 9789)
+            # whenever the edition has no year, yielding a bogus pubdate.
+            match = re.search(r"(?<!\d)(1\d{3}|20\d{2})(?!\d)", publication_value)
             if match:
-                return match.group(1)
+                return int(match.group(1))
         return None
 
     def isbn(self):
