@@ -73,7 +73,14 @@ def book_for_id(book_id, fetch_page_content):
 
 def book_page_urls_from_seach_page(xml_root):
     book_url_prefix = "/konyvek/"
-    book_list_root = xml_root.xpath('//a[@class="book_selector"]')
+    # Only the genuine search results live inside the "search_area" container.
+    # The same "book_selector" class is reused by sidebar widgets (newest
+    # releases, recommendations, ...) that every moly.hu page renders. Scoping
+    # to "search_area" keeps those out, so a search with no real hits returns
+    # nothing instead of unrelated widget books.
+    book_list_root = xml_root.xpath(
+        '//div[@class="search_area"]//a[@class="book_selector"]'
+    )
     matches = set()
     for book_item in book_list_root:
         strip_tags(book_item, "strong")
