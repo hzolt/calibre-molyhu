@@ -1,6 +1,5 @@
 from queue import Empty, Queue
 import datetime
-import re
 
 from calibre.utils.date import utc_tz
 from calibre.utils.cleantext import clean_ascii_chars
@@ -10,79 +9,7 @@ from calibre.ebooks.metadata import check_isbn
 
 import calibre_plugins.moly_hu_reloaded.moly_hu as moly_hu
 
-# Calibre's own rule for custom column lookup names: a '#', then a letter,
-# then lower case letters, digits or underscores (see CreateNewCustomColumn).
-LOOKUP_NAME_PATTERN = re.compile(r"^#[a-z][a-z0-9_]*$")
-
-
-def is_valid_lookup_name(lookup_name):
-    return bool(lookup_name) and bool(LOOKUP_NAME_PATTERN.match(lookup_name))
-
-
-def default_translator_shape():
-    """The column shape assumed when the library's own shape is not known."""
-    return {
-        'datatype': Molyhu.TRANSLATOR_DATATYPE,
-        'is_multiple': dict(Molyhu.TRANSLATOR_IS_MULTIPLE_SEPARATORS),
-        'display': dict(Molyhu.TRANSLATOR_DISPLAY),
-    }
-
-
-def translator_field_metadata(lookup_name, shape=None):
-    """Build the custom column metadata the translator value is attached to.
-
-    Calibre only applies a downloaded custom column value when the lookup
-    name exists in the library *and* the datatype and is_multiple of the
-    downloaded field match the library's column exactly
-    (calibre/db/cache.py, set_metadata) - a mismatch drops the value without
-    any error, which is why the shape is mirrored from the library instead of
-    being fixed here. A column's datatype cannot be changed after it has been
-    created, so assuming one shape would lock out every library whose column
-    was made differently.
-
-    'shape' carries the datatype, is_multiple and display the config widget
-    read from the library. The remaining keys are the ones calibre's own
-    FieldMetadata.add_custom_field() produces; table/column/colnum only
-    describe where the value lives in the library, and calibre writes through
-    its own field object, so those placeholders never reach the database.
-    """
-    shape = shape or default_translator_shape()
-    return {
-        'label': lookup_name[1:],
-        'name': _('Translator'),
-        'datatype': shape.get('datatype', Molyhu.TRANSLATOR_DATATYPE),
-        'display': dict(shape.get('display') or {}),
-        'is_multiple': dict(shape.get('is_multiple') or {}),
-        'search_terms': [lookup_name],
-        'table': 'custom_column_1',
-        'column': 'value',
-        'link_column': 'value',
-        'category_sort': 'value',
-        'colnum': 1,
-        'kind': 'field',
-        'is_custom': True,
-        'is_category': True,
-        'is_editable': True,
-        'is_csp': False,
-    }
-
-
-def format_translator(translators, shape=None):
-    """Shape the translator names to match the column they are written into.
-
-    A multi-value column takes the list as it is. A single-value column - the
-    plain "Text, column shown in the Tag browser" type - would reject a list,
-    so the names are joined with the separator the column uses to display a
-    list, falling back to a comma.
-    """
-    shape = shape or default_translator_shape()
-    if shape.get('is_multiple'):
-        return list(translators)
-    separator = (shape.get('is_multiple') or {}).get('list_to_ui') or ', '
-    return separator.join(translators)
-
-
-def book_to_metadata(book, translator_column=None, translator_shape=None) -> Metadata:
+def book_to_metadata(book) -> Metadata:
     metadata = Metadata(book.title(), book.authors())
     # FIXME(crash): handle results' relevance from isbn/molyid?
     metadata.source_relevance = 0
@@ -102,12 +29,6 @@ def book_to_metadata(book, translator_column=None, translator_shape=None) -> Met
     if book.series():
         metadata.series = book.series()[0]
         metadata.series_index = book.series()[1]
-    if translator_column and (translator := book.translator()):
-        metadata.set_user_metadata(
-            translator_column,
-            translator_field_metadata(translator_column, translator_shape),
-        )
-        metadata.set(translator_column, format_translator(translator, translator_shape))
     return metadata
 
 
@@ -138,78 +59,14 @@ class Molyhu(Source):
         'languages'
     ])
 
-    # The shape of the custom column the translator is written into. Calibre
-    # drops the downloaded value without any error when the library's column
-    # does not match this exactly, so the config widget checks it and warns.
-    TRANSLATOR_DATATYPE = 'text'
-    TRANSLATOR_IS_MULTIPLE = True
-    TRANSLATOR_DISPLAY = {'is_names': True}
-    TRANSLATOR_IS_MULTIPLE_SEPARATORS = {
-        'cache_to_list': '|', 'ui_to_list': '&', 'list_to_ui': ' & '
-    }
-
-    # Not an Option: this is written by the config widget from the library's
-    # own column metadata, not typed by hand, so it gets no generated editor.
-    # identify() runs in a worker with no library handle and cannot look the
-    # column up itself, hence the cache.
-    KEY_TRANSLATOR_SHAPE = 'translator_column_shape'
-
     # Options
     KEY_MAX_BOOKS = 'max_books'
-    KEY_TRANSLATOR_COLUMN = 'translator_column'
     options = (
         Option(KEY_MAX_BOOKS, 'number', 3, _('Maximum number of books to get'), _('The maximum number of books to process from the moly.hu search result')),
-        Option(KEY_TRANSLATOR_COLUMN, 'string', '#translator', _('Custom column for the translator'),
-               _('Lookup name of the custom column the moly.hu translator is written into, e.g. #translator. '
-                 'Leave it empty to not download the translator at all. The column must be of type '
-                 '"Text, column shown in the Tag browser" with "Contains names" ticked.')),
     )
-
-    def config_widget(self):
-        # Imported lazily: the config module pulls in Qt, which must not be
-        # loaded by the headless worker process that runs identify().
-        from calibre_plugins.moly_hu_reloaded.config import ConfigWidget
-
-        return ConfigWidget(self)
-
-    def translator_column_shape(self):
-        """The shape of the translator column, as last seen in the library."""
-        shape = self.prefs.get(self.KEY_TRANSLATOR_SHAPE)
-        if isinstance(shape, dict) and shape.get('datatype'):
-            return shape
-        return default_translator_shape()
-
-    def remember_translator_column_shape(self, column):
-        """Cache the library's column shape for the worker to reuse.
-
-        Called from the config widget, which is the only place that runs with
-        a library at hand. Passing None forgets a previously cached shape, so
-        a column that has gone away does not keep dictating the format.
-        """
-        if column is None:
-            self.prefs[self.KEY_TRANSLATOR_SHAPE] = None
-            return
-        self.prefs[self.KEY_TRANSLATOR_SHAPE] = {
-            'datatype': column.get('datatype'),
-            'is_multiple': dict(column.get('is_multiple') or {}),
-            'display': dict(column.get('display') or {}),
-        }
 
     def identify(self, log, result_queue, abort, title, authors, identifiers, timeout):
         max_books = self.prefs[self.KEY_MAX_BOOKS]
-        translator_column = (self.prefs[self.KEY_TRANSLATOR_COLUMN] or '').strip()
-        if translator_column and not is_valid_lookup_name(translator_column):
-            log.warning(
-                f'Ignoring invalid translator column lookup name: {translator_column!r}'
-            )
-            translator_column = None
-        translator_shape = self.translator_column_shape()
-        if translator_column:
-            log.info(
-                f'Translator column: {translator_column} '
-                f'(datatype {translator_shape["datatype"]}, '
-                f'is_multiple {translator_shape["is_multiple"]})'
-            )
 
         # Normalise the query with calibre's tokenizers, which drop leading
         # articles, punctuation and ZWJ noise that can throw off moly.hu's
@@ -257,8 +114,7 @@ class Molyhu(Source):
                 self.cache_identifier_to_cover_url(book.moly_id(), covers[0])
             self.cache_isbn_to_identifier(book.isbn(), book.moly_id())
 
-            metadata = book_to_metadata(book, translator_column, translator_shape)
-            # Only touches the standard fields, so the translator survives it.
+            metadata = book_to_metadata(book)
             self.clean_downloaded_metadata(metadata)
             result_queue.put(metadata)
 

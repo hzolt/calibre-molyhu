@@ -26,7 +26,6 @@ readonly TEMPORARY_WORK_DIR=$(mktemp -d -p .)
 cd "${TEMPORARY_WORK_DIR}"
 
 cp "${SOURCE_PATH}"/calibre/__init__.py .
-cp "${SOURCE_PATH}"/calibre/config.py .
 cp "${SOURCE_PATH}"/calibre/plugin-import-name-moly_hu_reloaded.txt .
 cp "${SOURCE_PATH}"/moly_hu/src/moly_hu/moly_hu.py .
 cp "${SOURCE_PATH}"/README.md .
