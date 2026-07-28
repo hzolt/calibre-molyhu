@@ -24,14 +24,36 @@ without any warning when the type does not match, so the plugin config checks
 the column and warns; if the column does not exist yet, a button there creates
 it (calibre has to be restarted afterwards, as for any new column).
 
-Two limitations worth knowing:
+All edition-derived fields (publisher, ISBN, publication date, translator) are
+read from the **first** edition listed on the page, so they always describe the
+same edition.
 
-- All edition-derived fields (publisher, ISBN, publication date, translator)
-  are read from the **first** edition listed on the page, so they always
-  describe the same edition.
-- If another enabled metadata source returns a result with the same title and
-  authors, calibre merges the two and rebuilds the record from standard fields
-  only, dropping the translator. Downloading from moly.hu alone is unaffected.
+#### Turn off the sources that compete for the same book
+
+**The translator only survives when no other enabled metadata source returns the
+same book.** This is a calibre limitation, not something the plugin can work
+around: when several sources return a result with the same ISBN, or the same
+title and authors, calibre merges them into one record that it rebuilds from
+the standard fields alone (`ISBNMerge.merge` in
+`calibre/ebooks/metadata/sources/identify.py`). Custom columns are dropped
+there, and metadata source plugins get no hook to prevent it.
+
+In practice a Hungarian edition is also carried by Goodreads and StoryGraph via
+its ISBN, so all three collapse into one merged record and the translator is
+lost. Turn those sources off in *Preferences → Metadata download* while
+fetching Hungarian editions, and moly.hu's result stands on its own.
+
+The download log tells you whether it happened. The last line reports how many
+results survived merging:
+
+```
+Found 1 results        <- Moly.hu Reloaded, with "Translator : ..." in its block
+...
+We have 4 merged results
+```
+
+If moly.hu's own block lists the translator but the column stays empty, its
+result was merged with another source's.
 
 The calibre-web provider does not support this: its `MetaRecord` has no custom
 column concept.
