@@ -130,7 +130,24 @@ class MolyhuTranslatorAction(InterfaceAction):
     action_type = 'current'
 
     def genesis(self):
+        icon = self.load_icon()
+        if icon is not None and not icon.isNull():
+            self.qaction.setIcon(icon)
         self.qaction.triggered.connect(self.start)
+
+    def load_icon(self):
+        """Load the toolbar icon out of the plugin zip.
+
+        get_icons is injected into the module namespace by calibre's plugin
+        loader, so it does not exist when this file is imported outside a zip
+        - running the tests, for one. Passing the plugin name lets an icon
+        theme override the bundled image.
+        """
+        try:
+            return get_icons(  # noqa: F821
+                'images/moly_hu_translator.png', 'Moly.hu Translator')
+        except NameError:
+            return None
 
     def start(self):
         column_name = (prefs['translator_column'] or '').strip()

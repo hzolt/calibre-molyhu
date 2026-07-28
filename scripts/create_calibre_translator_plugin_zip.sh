@@ -29,6 +29,8 @@ cp "${SOURCE_PATH}"/calibre_translator/__init__.py .
 cp "${SOURCE_PATH}"/calibre_translator/action.py .
 cp "${SOURCE_PATH}"/calibre_translator/config.py .
 cp "${SOURCE_PATH}"/calibre_translator/plugin-import-name-moly_hu_translator.txt .
+mkdir -p images
+cp "${SOURCE_PATH}"/calibre_translator/images/*.png images/
 cp "${SOURCE_PATH}"/moly_hu/src/moly_hu/moly_hu.py .
 cp "${SOURCE_PATH}"/README.md .
 
