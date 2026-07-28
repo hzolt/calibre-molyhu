@@ -1,8 +1,14 @@
+from xml.sax.saxutils import escape
+
 from qt.core import QLabel, QPushButton, Qt
 
 from calibre.gui2.metadata.config import ConfigWidget as DefaultConfigWidget
 
-from calibre_plugins.moly_hu_reloaded import Molyhu, is_valid_lookup_name
+from calibre_plugins.moly_hu_reloaded import (
+    Molyhu,
+    format_translator,
+    is_valid_lookup_name,
+)
 
 
 def _current_db():
@@ -33,11 +39,16 @@ def _column_metadata(lookup_name):
         return None
 
 
-def _matches_expected_shape(column):
-    return (
-        column.get('datatype') == Molyhu.TRANSLATOR_DATATYPE
-        and column.get('is_multiple') == Molyhu.TRANSLATOR_IS_MULTIPLE_SEPARATORS
-    )
+def _describe_column(column):
+    """A short, human readable name for the column's shape."""
+    datatype = column.get('datatype')
+    if datatype != 'text':
+        return datatype or _('unknown')
+    if not column.get('is_multiple'):
+        return _('single text value')
+    if column.get('display', {}).get('is_names'):
+        return _('multiple names, joined with "&"')
+    return _('multiple comma separated values')
 
 
 class ConfigWidget(DefaultConfigWidget):
@@ -109,25 +120,32 @@ class ConfigWidget(DefaultConfigWidget):
 
         column = _column_metadata(lookup_name)
         if column is None:
+            # Forget any earlier shape, so a column that has been deleted does
+            # not keep dictating how the translator is formatted.
+            self.plugin.remember_translator_column_shape(None)
             self.translator_status.setText(
                 _('The %s column does not exist in this library yet.') % lookup_name
             )
             self.create_column_button.setEnabled(True)
             return
 
-        if _matches_expected_shape(column):
-            self.translator_status.setText(
-                _('The %s column is ready to receive the translator.') % lookup_name
-            )
-            return
+        # Calibre applies a downloaded custom column value only when the
+        # datatype and is_multiple match the library's column exactly, and a
+        # column's type cannot be changed once it exists. Remember the shape
+        # so identify(), which has no library to look at, can match it.
+        self.plugin.remember_translator_column_shape(column)
 
+        shape = self.plugin.translator_column_shape()
+        example = format_translator([_('Kaposi Tamás'), _('Nagy Imre')], shape)
         self.translator_status.setText(
-            _('<b>The %(name)s column exists, but its type is "%(actual)s".</b> '
-              'The translator is only stored in a column of type "Text, column '
-              'shown in the Tag browser" with "Contains names" ticked. Calibre '
-              'discards the downloaded value without any warning until the '
-              'column is changed, or another column name is used here.')
-            % {'name': lookup_name, 'actual': column.get('datatype')}
+            _('The %(name)s column holds a %(kind)s, and the translator is '
+              'written to match it. Two translators would be stored as '
+              '%(example)s.')
+            % {
+                'name': lookup_name,
+                'kind': _describe_column(column),
+                'example': escape(str(example)),
+            }
         )
 
     def create_translator_column(self):
