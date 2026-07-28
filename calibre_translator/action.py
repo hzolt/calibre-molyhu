@@ -1,7 +1,9 @@
 import re
 
+from functools import partial
+
 from calibre import browser
-from calibre.gui2 import error_dialog, info_dialog
+from calibre.gui2 import Dispatcher, error_dialog, info_dialog
 from calibre.gui2.actions import InterfaceAction
 from calibre.gui2.threaded_jobs import ThreadedJob
 
@@ -162,11 +164,17 @@ class MolyhuTranslatorAction(InterfaceAction):
                 'identifiers': dict(mi.identifiers or {}),
             }
 
+        # Dispatcher, not a plain callable: ThreadedJob invokes the callback
+        # from the worker thread it ran the job on (start_work in
+        # gui2/threaded_jobs.py calls self.callback(self) directly). Touching
+        # the library view or opening a dialog from there freezes calibre.
+        # Dispatcher is created here, on the GUI thread, and hands the call
+        # back to it through a queued signal.
         job = ThreadedJob(
             'moly_hu_translator',
             _('Fetching translators from moly.hu for %d books') % len(books),
             fetch_translators, (books,), {},
-            lambda job: self.finished(job, column_name),
+            Dispatcher(partial(self.finished, column_name=column_name)),
         )
         self.gui.job_manager.run_threaded_job(job)
         self.gui.status_bar.show_message(_('Fetching translators from moly.hu'), 3000)
