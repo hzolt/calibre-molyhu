@@ -45,6 +45,13 @@ hits - a title search answers with the author's whole back catalogue - so
 taking one on trust would file another book's translator. Books that cannot be
 confirmed are reported as not found instead.
 
+Each run writes a log in the style of the metadata download log - the page it
+matched, the search terms it tried, and the title, author, publisher and
+translator it read - to `moly_hu_translator.log` in the calibre configuration
+directory, whose path is shown when the run finishes. The same log is in
+calibre's Jobs list until it is cleared; the file outlives the session. It
+holds one run and is overwritten each time.
+
 The translator deliberately does **not** come from the metadata source plugin.
 Calibre applies a downloaded record through one of three paths, and only
 `db.set_metadata` copies custom columns: `update_from_mi` (the Edit metadata

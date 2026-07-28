@@ -1,8 +1,11 @@
+import os
 import re
-
+import time
+import unicodedata
 from functools import partial
 
 from calibre import browser
+from calibre.constants import config_dir
 from calibre.gui2 import Dispatcher, error_dialog, info_dialog
 from calibre.gui2.actions import InterfaceAction
 from calibre.gui2.threaded_jobs import ThreadedJob
@@ -12,6 +15,30 @@ from calibre_plugins.moly_hu_translator import prefs
 import calibre_plugins.moly_hu_translator.moly_hu as moly_hu
 
 MOLY_ID_KEY = 'moly_hu'
+
+
+LOG_PATH = os.path.join(config_dir, 'plugins', 'moly_hu_translator.log')
+
+
+def write_log_file(job):
+    """Save the job log next to the plugin's settings, and return the path.
+
+    Calibre keeps the same log in the Jobs list, but only until it is cleared,
+    and only for whoever thinks to look there. A file survives the session and
+    can be attached to a bug report. It holds one run: overwritten each time,
+    so it cannot grow without bound.
+    """
+    try:
+        os.makedirs(os.path.dirname(LOG_PATH), exist_ok=True)
+        with open(LOG_PATH, 'wb') as handle:
+            handle.write(job.log.plain_text.encode('utf-8'))
+        return LOG_PATH
+    except Exception:
+        # A log that cannot be written must not lose the results with it.
+        import traceback
+
+        traceback.print_exc()
+        return None
 
 
 def format_for_column(translators, column):
@@ -44,9 +71,19 @@ def only_digits(text):
     return re.sub(r'\D', '', text or '')
 
 
-def normalise(text):
-    """Fold a title down to what two spellings of the same book share."""
-    return re.sub(r'\W+', '', (text or '').replace('​', ''), flags=re.UNICODE).casefold()
+def fold(text):
+    """Strip a title down to what two spellings of the same book share.
+
+    Accents are removed as well as case, so a title that lost its diacritics
+    somewhere still compares equal.
+    """
+    stripped = unicodedata.normalize('NFKD', (text or '').replace('​', ''))
+    return ''.join(c for c in stripped if not unicodedata.combining(c)).casefold()
+
+
+def title_tokens(text):
+    """The set of words in a title, ignoring case, accents and punctuation."""
+    return {word for word in re.split(r'\W+', fold(text), flags=re.UNICODE) if word}
 
 
 def is_match(book, info):
@@ -55,30 +92,45 @@ def is_match(book, info):
     Nothing is written unless this says yes. A search returns a set of hits in
     no meaningful order - the whole back catalogue of the author, typically -
     so picking one without checking would file another book's translator.
+
+    Titles are compared as sets of words rather than as strings, because a
+    translated edition carries both the Hungarian and the original title and
+    the two sides do not agree on the order or the separator: the library may
+    hold "Mégis egymásnak teremtve? - So Not Meant To Be" where moly.hu has
+    "So Not Meant To Be – Mégis egymásnak teremtve?". Requiring the sets to be
+    equal keeps this strict - one title being merely contained in the other is
+    not enough, or "Aliens" would match "A teljes Aliens-gyűjtemény 2."
     """
     isbn = (info.get('identifiers') or {}).get('isbn')
     if isbn and book.isbn() and only_digits(isbn) == only_digits(book.isbn()):
         return True
-    return bool(book.title()) and normalise(book.title()) == normalise(info.get('title'))
+    page = title_tokens(book.title())
+    return bool(page) and page == title_tokens(info.get('title'))
 
 
-def find_translator(info, log, abort=None):
-    """Locate the book on moly.hu and return its translator names, or None."""
+def find_book(info, log, abort=None):
+    """Locate the book on moly.hu and return it, or None.
+
+    Returns the parsed page rather than just the translator so the caller can
+    log what was actually matched - which page a name came from is the first
+    thing worth knowing when a result looks wrong.
+    """
     moly_id = (info.get('identifiers') or {}).get(MOLY_ID_KEY)
     if moly_id:
         # A moly.hu id is already an identified match, so it is trusted.
-        log('  reading', moly_hu.book_url_for_id(moly_id))
-        book = moly_hu.book_for_id(moly_id, fetch_page)
-        return book.translator() if book else None
+        log('Hit URL: %s' % moly_hu.book_url_for_id(moly_id))
+        return moly_hu.book_for_id(moly_id, fetch_page)
+
+    terms = moly_hu.generate_search_terms(
+        info.get('title'), info.get('authors'), info.get('identifiers') or {})
+    log('Search terms: %s' % terms)
 
     seen = set()
     budget = CANDIDATE_BUDGET
-    for term in moly_hu.generate_search_terms(
-        info.get('title'), info.get('authors'), info.get('identifiers') or {}
-    ):
+    for term in terms:
         if budget <= 0 or (abort is not None and abort.is_set()):
             break
-        log('  searching for', term)
+        log('Search for: %s' % term)
         for candidate in sorted(moly_hu.search(term, fetch_page)):
             if budget <= 0 or (abort is not None and abort.is_set()):
                 break
@@ -88,34 +140,58 @@ def find_translator(info, log, abort=None):
             budget -= 1
             book = moly_hu.book_for_id(candidate, fetch_page)
             if book and is_match(book, info):
-                log('  matched', candidate)
-                return book.translator()
+                log('Hit URL: %s' % moly_hu.book_url_for_id(candidate))
+                return book
     return None
+
+
+def log_book(log, book, translators):
+    """Report a match in the same shape as the metadata download log."""
+    log('Found 1 results')
+    for label, value in (
+        ('Title', book.title()),
+        ('Author(s)', ' & '.join(book.authors() or [])),
+        ('Publisher', book.publisher()),
+        ('Translator', ', '.join(translators or [])),
+    ):
+        log('%-20s: %s' % (label, value or ''))
 
 
 def fetch_translators(books, abort=None, log=None, notifications=None):
     """Job body: look every book up on moly.hu. Runs off the GUI thread."""
     found, missing = {}, []
     total = max(len(books), 1)
+    started = time.time()
+
     for index, (book_id, info) in enumerate(books.items()):
         if abort is not None and abort.is_set():
+            log('Aborted after %d of %d books' % (index, total))
             break
         title = info.get('title') or ''
         if notifications is not None:
             notifications.put((index / total, title))
-        log('%s:' % title)
+
+        log('\n' + '*' * 30 + ' %s ' % title + '*' * 30)
+        book_started = time.time()
         try:
-            translators = find_translator(info, log, abort)
+            book = find_book(info, log, abort)
         except Exception as err:
-            log.error('  failed:', err)
+            log.error('Failed: %s' % err)
             missing.append(title)
             continue
+
+        translators = book.translator() if book else None
         if translators:
             found[book_id] = translators
-            log('  translator:', ', '.join(translators))
+            log_book(log, book, translators)
         else:
             missing.append(title)
-            log('  no translator found')
+            log('Found 0 results' if book is None else 'No translator on the page')
+        log('Downloading from moly.hu took %s' % (time.time() - book_started))
+
+    log('\n' + '=' * 78)
+    log('Fetched %d of %d books in %s seconds'
+        % (len(found), total, time.time() - started))
     return found, missing
 
 
@@ -210,19 +286,37 @@ class MolyhuTranslatorAction(InterfaceAction):
                 self.gui, _('Column not found'),
                 _('There is no %s column in this library.') % column_name, show=True)
 
-        written = {
-            book_id: format_for_column(names, column)
-            for book_id, names in found.items()
-            if db.new_api.has_id(book_id)
-        }
+        written, done_lines = {}, []
+        for book_id, names in found.items():
+            if not db.new_api.has_id(book_id):
+                continue
+            written[book_id] = format_for_column(names, column)
+            done_lines.append('%s: %s' % (
+                db.new_api.field_for('title', book_id), ', '.join(names)))
+
         if written:
             db.new_api.set_field(column_name, written)
             self.gui.library_view.model().refresh_ids(list(written), current_row=-1)
             self.gui.tags_view.recount()
 
-        message = _('Wrote the translator for %(done)d of %(total)d books.') % {
+        # The summary stays to one line and the per book detail goes to
+        # det_msg. info_dialog lays the message out in a word wrapped label
+        # that grows with its content, so a long list of books pushes the
+        # dialog past the edge of the calibre window. det_msg is shown in the
+        # collapsible "Show details" pane instead, which scrolls.
+        summary = _('Wrote the translator for %(done)d of %(total)d books.') % {
             'done': len(written), 'total': len(written) + len(missing)}
+
+        sections = []
+        if done_lines:
+            sections.append(_('Written:') + '\n' + '\n'.join(sorted(done_lines)))
         if missing:
-            message += '\n\n' + _('No translator found for:') + '\n' + '\n'.join(missing)
-        info_dialog(self.gui, _('Translators fetched'), message,
-                    show=True, show_copy_button=bool(missing))
+            sections.append(
+                _('No translator found:') + '\n' + '\n'.join(sorted(missing)))
+
+        log_path = write_log_file(job)
+        if log_path:
+            summary += '\n' + _('Log: %s') % log_path
+
+        info_dialog(self.gui, _('Translators fetched'), summary,
+                    det_msg='\n\n'.join(sections), show=True, show_copy_button=True)
