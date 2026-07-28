@@ -63,11 +63,28 @@ def generate_search_terms(title, authors, identifiers):
     return list(dict.fromkeys(search_terms))
 
 
+def parse_page(content):
+    """Parse a moly.hu page into an lxml tree.
+
+    A str is encoded to UTF-8 bytes first. Handing lxml a str sends libxml2
+    down its unicode parsing path, and moly.hu pages carry their own
+    <meta charset="utf-8">. Older libxml2 builds - such as the one calibre
+    bundles - can then try to switch encoding on input that is already
+    decoded and abort with a fatal "XMLSyntaxError: internal error". That
+    error is fatal, so the recover mode lxml.html.fromstring enables by
+    default does not absorb it, and the whole page fails to parse.
+    Feeding bytes lets libxml2 apply the declared encoding itself.
+    """
+    if isinstance(content, str):
+        content = content.encode("utf-8", errors="replace")
+    return fromstring(content)
+
+
 def book_for_id(book_id, fetch_page_content):
     url = f"{BOOK_URL}/{book_id}"
     book_page = fetch_page_content(url)
     if book_page:
-        return Book(xml_root=fromstring(book_page), moly_id=book_id)
+        return Book(xml_root=parse_page(book_page), moly_id=book_id)
     return None
 
 
@@ -93,7 +110,7 @@ def book_page_urls_from_seach_page(xml_root):
 def search(keyword, fetch_page_content):
     search_url = f"{DOMAIN}/kereses?utf8=%E2%9C%93&query=" + quote_plus(keyword)
     content = fetch_page_content(search_url)
-    return book_page_urls_from_seach_page(fromstring(content))
+    return book_page_urls_from_seach_page(parse_page(content))
 
 
 def book_url_for_id(id):

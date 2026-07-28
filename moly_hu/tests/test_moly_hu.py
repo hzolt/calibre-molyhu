@@ -3,7 +3,12 @@ from pathlib import Path
 
 from lxml.html import fromstring
 
-from moly_hu.moly_hu import Book, book_page_urls_from_seach_page, generate_search_terms
+from moly_hu.moly_hu import (
+    Book,
+    book_page_urls_from_seach_page,
+    generate_search_terms,
+    parse_page,
+)
 
 test_inputs_path = Path(__file__).parent / "inputs"
 
@@ -108,6 +113,28 @@ def test_publication_date_falls_back_to_bare_year():
     book = Book(fromstring(html))
 
     assert book.publication_date() == datetime.date(2025, 1, 1)
+
+
+def test_parse_page_accepts_str_and_bytes_with_a_charset_declaration():
+    # moly.hu pages declare their own encoding. Handing that to lxml as a str
+    # uses libxml2's unicode path, where older builds can abort with a fatal
+    # "internal error" that recover mode does not absorb, so parse_page feeds
+    # bytes instead. Both input shapes must yield the same tree.
+    html = (
+        '<!DOCTYPE html><html lang="hu"><head><meta charset="utf-8" />'
+        "<title>t</title></head>"
+        '<body><div id="content"><div class="authors">'
+        '<a href="/alkotok/aisling-rawle">Aisling Rawle</a></div>'
+        '<span class="item">A komplexum</span></div></body></html>'
+    )
+
+    from_str = Book(parse_page(html))
+    from_bytes = Book(parse_page(html.encode("utf-8")))
+
+    assert from_str.title() == "A komplexum"
+    assert from_str.authors() == ["Aisling Rawle"]
+    assert from_bytes.title() == from_str.title()
+    assert from_bytes.authors() == from_str.authors()
 
 
 def test_edition_fields_come_from_a_single_edition():
