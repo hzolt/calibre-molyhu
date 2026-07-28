@@ -3,7 +3,7 @@ import re
 from urllib.parse import quote_plus
 
 from lxml.etree import strip_tags
-from lxml.html import fromstring
+from lxml.html import HTMLParser, fromstring
 
 DOMAIN = "https://moly.hu"
 BOOK_URL = DOMAIN + "/konyvek"
@@ -66,18 +66,26 @@ def generate_search_terms(title, authors, identifiers):
 def parse_page(content):
     """Parse a moly.hu page into an lxml tree.
 
+    moly.hu serves UTF-8, and both halves of this matter:
+
     A str is encoded to UTF-8 bytes first. Handing lxml a str sends libxml2
-    down its unicode parsing path, and moly.hu pages carry their own
-    <meta charset="utf-8">. Older libxml2 builds - such as the one calibre
-    bundles - can then try to switch encoding on input that is already
-    decoded and abort with a fatal "XMLSyntaxError: internal error". That
-    error is fatal, so the recover mode lxml.html.fromstring enables by
-    default does not absorb it, and the whole page fails to parse.
-    Feeding bytes lets libxml2 apply the declared encoding itself.
+    down its unicode parsing path, where some pages abort with a fatal
+    "XMLSyntaxError: internal error". Being fatal, the recover mode
+    lxml.html.fromstring enables by default does not absorb it, and the
+    whole page is lost.
+
+    The encoding is then stated explicitly rather than left to libxml2.
+    moly.hu announces itself with the HTML5 <meta charset="utf-8">, which
+    older libxml2 builds - such as the one calibre bundles - do not read;
+    they only understand the <meta http-equiv="Content-Type"> spelling. With
+    no encoding it recognises, libxml2 falls back to Latin-1 and every
+    accented character arrives mangled ("Század" -> "SzÃ¡zad").
     """
     if isinstance(content, str):
         content = content.encode("utf-8", errors="replace")
-    return fromstring(content)
+    # A parser per call: lxml parser objects must not be shared between
+    # threads, and calibre runs identify() on worker threads.
+    return fromstring(content, parser=HTMLParser(encoding="utf-8"))
 
 
 def book_for_id(book_id, fetch_page_content):
