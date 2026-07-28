@@ -44,6 +44,14 @@ jobs:
         mkdir -p output
         bash ./scripts/create_calibre_plugin_zip.sh ./ ./output/${RELEASE_FILE_NAME} ${RELEASE_VERSION}
 
+    - name: Create calibre translator package
+      if: startsWith(github.ref, 'refs/tags/v')
+      run: |
+        export RELEASE_VERSION=${{github.ref_name}}
+        export RELEASE_FILE_NAME=Calibre_Moly_hu_Translator-${RELEASE_VERSION}.zip
+        mkdir -p output
+        bash ./scripts/create_calibre_translator_plugin_zip.sh ./ ./output/${RELEASE_FILE_NAME} ${RELEASE_VERSION}
+
     - name: Create calibre-web package
       if: startsWith(github.ref, 'refs/tags/v')
       run: |

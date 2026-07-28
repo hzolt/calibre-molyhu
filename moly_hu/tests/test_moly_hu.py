@@ -3,7 +3,12 @@ from pathlib import Path
 
 from lxml.html import fromstring
 
-from moly_hu.moly_hu import Book, book_page_urls_from_seach_page, generate_search_terms
+from moly_hu.moly_hu import (
+    Book,
+    book_page_urls_from_seach_page,
+    generate_search_terms,
+    parse_page,
+)
 
 test_inputs_path = Path(__file__).parent / "inputs"
 
@@ -108,6 +113,36 @@ def test_publication_date_falls_back_to_bare_year():
     book = Book(fromstring(html))
 
     assert book.publication_date() == datetime.date(2025, 1, 1)
+
+
+def test_parse_page_decodes_utf8_without_a_charset_declaration():
+    # moly.hu is UTF-8 but announces it with the HTML5 <meta charset="utf-8">,
+    # which older libxml2 builds ignore. Left to guess, libxml2 falls back to
+    # Latin-1 and mangles every accented character ("Század" -> "SzÃ¡zad").
+    # The page is deliberately built without any charset declaration here, so
+    # this fails unless parse_page states the encoding itself.
+    html = (
+        '<!DOCTYPE html><html lang="hu"><head><title>t</title></head>'
+        '<body><div id="content"><div class="authors">'
+        '<a href="/alkotok/aisling-rawle">Aisling Rawle</a></div>'
+        '<span class="item">A ​komplexum</span>'
+        '<div class="items"><div class="edition edition_1">'
+        '<div><a href="/kiadok/xxi-szazad">XXI. Század</a>, Budapest, 2026 </div>'
+        "<div>352 oldal<span> · </span><strong>Fordította</strong>: "
+        '<a href="/alkotok/pelda-eva">Példa Éva</a></div>'
+        "</div></div></div></body></html>"
+    )
+
+    from_str = Book(parse_page(html))
+    from_bytes = Book(parse_page(html.encode("utf-8")))
+
+    for book in (from_str, from_bytes):
+        # title() also strips the zero width space moly.hu puts in titles,
+        # which only works when the bytes were decoded as UTF-8 to begin with.
+        assert book.title() == "A komplexum"
+        assert book.authors() == ["Aisling Rawle"]
+        assert book.publisher() == "XXI. Század"
+        assert book.translator() == ["Példa Éva"]
 
 
 def test_edition_fields_come_from_a_single_edition():

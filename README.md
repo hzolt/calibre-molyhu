@@ -12,37 +12,45 @@ Supported applications:
 
 Search for book in command-line: `python -m moly_hu.main "raymond feist"`
 
-### Translator custom column (calibre only)
+This repository builds three artifacts from one shared scraper
+(`moly_hu/src/moly_hu/moly_hu.py`), which is pure lxml and imports nothing
+from calibre. Each front end copies it into its own package at build time:
 
-moly.hu credits the translator on the edition line, and the calibre plugin can
-write it into a custom column. Set the lookup name in *Preferences → Metadata
-download → Moly.hu Reloaded* (`#translator` by default, empty disables it).
+| Artifact | Built by | What it does |
+|---|---|---|
+| **Moly.hu Reloaded** | `scripts/create_calibre_plugin_zip.sh` | calibre metadata source: title, authors, series, publisher, publication date, ISBN, tags, rating, comments, covers |
+| **Moly.hu Translator** | `scripts/create_calibre_translator_plugin_zip.sh` | calibre toolbar button that writes the translator into a custom column |
+| **calibre-web provider** | `scripts/create_calibreweb_plugin_zip.sh` | the same metadata for calibre-web |
 
-The column must be of type **"Text, column shown in the Tag browser"** with
-**"Contains names"** ticked. Calibre discards a downloaded custom column value
-without any warning when the type does not match, so the plugin config checks
-the column and warns; if the column does not exist yet, a button there creates
-it (calibre has to be restarted afterwards, as for any new column).
+The two calibre plugins are separate because calibre loads exactly one plugin
+class per zip (`plugin_classes[0]` in `calibre/customize/zipplugin.py`), and
+because they need different things from calibre: a metadata source runs in a
+worker with no library handle, while writing a custom column needs the
+library. Install both if you want the translator.
 
-Two limitations worth knowing:
+### Moly.hu Translator
 
-- All edition-derived fields (publisher, ISBN, publication date, translator)
-  are read from the **first** edition listed on the page, so they always
-  describe the same edition.
-- If another enabled metadata source returns a result with the same title and
-  authors, calibre merges the two and rebuilds the record from standard fields
-  only, dropping the translator. Downloading from moly.hu alone is unaffected.
+Adds a **Fetch translator from moly.hu** toolbar button. Select books, press
+it, and the translator is written into a custom column with
+`db.new_api.set_field`.
 
-The calibre-web provider does not support this: its `MetaRecord` has no custom
-column concept.
+Set the column in *Preferences → Plugins → Moly.hu Translator*. Any column
+type works: the value is shaped to fit whatever is there, because calibre
+rejects a value whose datatype does not match the column, and a column's type
+cannot be changed once it has been created.
 
-Include it in calibre-web docker yaml:
-```
-volumes:
-  - moly_hu.py:/app/calibre-web/cps/metadata_provider/moly_hu.py:ro
-  - moly_hu_provider.py:/app/calibre-web/cps/metadata_provider/moly_hu_provider.py:ro
-```
+A book is only written when the moly.hu page is confirmed to be the right one,
+by a matching ISBN or a matching title. `search()` returns an unordered set of
+hits - a title search answers with the author's whole back catalogue - so
+taking one on trust would file another book's translator. Books that cannot be
+confirmed are reported as not found instead.
 
+The translator deliberately does **not** come from the metadata source plugin.
+Calibre applies a downloaded record through one of three paths, and only
+`db.set_metadata` copies custom columns: `update_from_mi` (the Edit metadata
+dialog) and `CompareMany` (the review dialog) handle standard fields only, and
+a plugin does not get to choose which one the GUI runs. The ISBN merge
+discards custom columns as well. A toolbar action has none of those problems.
 
 ## Contributing
 ```

@@ -1,6 +1,5 @@
 from queue import Empty, Queue
 import datetime
-import re
 
 from calibre.utils.date import utc_tz
 from calibre.utils.cleantext import clean_ascii_chars
@@ -10,52 +9,7 @@ from calibre.ebooks.metadata import check_isbn
 
 import calibre_plugins.moly_hu_reloaded.moly_hu as moly_hu
 
-# Calibre's own rule for custom column lookup names: a '#', then a letter,
-# then lower case letters, digits or underscores (see CreateNewCustomColumn).
-LOOKUP_NAME_PATTERN = re.compile(r"^#[a-z][a-z0-9_]*$")
-
-
-def is_valid_lookup_name(lookup_name):
-    return bool(lookup_name) and bool(LOOKUP_NAME_PATTERN.match(lookup_name))
-
-
-def translator_field_metadata(lookup_name):
-    """Build the custom column metadata the translator value is attached to.
-
-    Calibre only applies a downloaded custom column value when the lookup
-    name exists in the library *and* the datatype and is_multiple of the
-    downloaded field match the library's column exactly
-    (calibre/db/cache.py, set_metadata) - a mismatch drops the value without
-    any error. The keys below are the ones calibre's own
-    FieldMetadata.add_custom_field() produces, and is_multiple holds the
-    separators calibre stores for a names-like text column
-    (calibre/db/backend.py, read_custom_column_metadata).
-
-    table/column/colnum only describe where the value lives in the library.
-    Calibre writes through its own field object, so these placeholders never
-    reach the database.
-    """
-    return {
-        'label': lookup_name[1:],
-        'name': _('Translator'),
-        'datatype': Molyhu.TRANSLATOR_DATATYPE,
-        'display': dict(Molyhu.TRANSLATOR_DISPLAY),
-        'is_multiple': dict(Molyhu.TRANSLATOR_IS_MULTIPLE_SEPARATORS),
-        'search_terms': [lookup_name],
-        'table': 'custom_column_1',
-        'column': 'value',
-        'link_column': 'value',
-        'category_sort': 'value',
-        'colnum': 1,
-        'kind': 'field',
-        'is_custom': True,
-        'is_category': True,
-        'is_editable': True,
-        'is_csp': False,
-    }
-
-
-def book_to_metadata(book, translator_column=None) -> Metadata:
+def book_to_metadata(book) -> Metadata:
     metadata = Metadata(book.title(), book.authors())
     # FIXME(crash): handle results' relevance from isbn/molyid?
     metadata.source_relevance = 0
@@ -75,11 +29,6 @@ def book_to_metadata(book, translator_column=None) -> Metadata:
     if book.series():
         metadata.series = book.series()[0]
         metadata.series_index = book.series()[1]
-    if translator_column and (translator := book.translator()):
-        metadata.set_user_metadata(
-            translator_column, translator_field_metadata(translator_column)
-        )
-        metadata.set(translator_column, translator)
     return metadata
 
 
@@ -110,42 +59,14 @@ class Molyhu(Source):
         'languages'
     ])
 
-    # The shape of the custom column the translator is written into. Calibre
-    # drops the downloaded value without any error when the library's column
-    # does not match this exactly, so the config widget checks it and warns.
-    TRANSLATOR_DATATYPE = 'text'
-    TRANSLATOR_IS_MULTIPLE = True
-    TRANSLATOR_DISPLAY = {'is_names': True}
-    TRANSLATOR_IS_MULTIPLE_SEPARATORS = {
-        'cache_to_list': '|', 'ui_to_list': '&', 'list_to_ui': ' & '
-    }
-
     # Options
     KEY_MAX_BOOKS = 'max_books'
-    KEY_TRANSLATOR_COLUMN = 'translator_column'
     options = (
         Option(KEY_MAX_BOOKS, 'number', 3, _('Maximum number of books to get'), _('The maximum number of books to process from the moly.hu search result')),
-        Option(KEY_TRANSLATOR_COLUMN, 'string', '#translator', _('Custom column for the translator'),
-               _('Lookup name of the custom column the moly.hu translator is written into, e.g. #translator. '
-                 'Leave it empty to not download the translator at all. The column must be of type '
-                 '"Text, column shown in the Tag browser" with "Contains names" ticked.')),
     )
-
-    def config_widget(self):
-        # Imported lazily: the config module pulls in Qt, which must not be
-        # loaded by the headless worker process that runs identify().
-        from calibre_plugins.moly_hu_reloaded.config import ConfigWidget
-
-        return ConfigWidget(self)
 
     def identify(self, log, result_queue, abort, title, authors, identifiers, timeout):
         max_books = self.prefs[self.KEY_MAX_BOOKS]
-        translator_column = (self.prefs[self.KEY_TRANSLATOR_COLUMN] or '').strip()
-        if translator_column and not is_valid_lookup_name(translator_column):
-            log.warning(
-                f'Ignoring invalid translator column lookup name: {translator_column!r}'
-            )
-            translator_column = None
 
         # Normalise the query with calibre's tokenizers, which drop leading
         # articles, punctuation and ZWJ noise that can throw off moly.hu's
@@ -193,8 +114,7 @@ class Molyhu(Source):
                 self.cache_identifier_to_cover_url(book.moly_id(), covers[0])
             self.cache_isbn_to_identifier(book.isbn(), book.moly_id())
 
-            metadata = book_to_metadata(book, translator_column)
-            # Only touches the standard fields, so the translator survives it.
+            metadata = book_to_metadata(book)
             self.clean_downloaded_metadata(metadata)
             result_queue.put(metadata)
 

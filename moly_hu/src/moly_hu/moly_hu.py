@@ -3,7 +3,7 @@ import re
 from urllib.parse import quote_plus
 
 from lxml.etree import strip_tags
-from lxml.html import fromstring
+from lxml.html import HTMLParser, fromstring
 
 DOMAIN = "https://moly.hu"
 BOOK_URL = DOMAIN + "/konyvek"
@@ -63,11 +63,36 @@ def generate_search_terms(title, authors, identifiers):
     return list(dict.fromkeys(search_terms))
 
 
+def parse_page(content):
+    """Parse a moly.hu page into an lxml tree.
+
+    moly.hu serves UTF-8, and both halves of this matter:
+
+    A str is encoded to UTF-8 bytes first. Handing lxml a str sends libxml2
+    down its unicode parsing path, where some pages abort with a fatal
+    "XMLSyntaxError: internal error". Being fatal, the recover mode
+    lxml.html.fromstring enables by default does not absorb it, and the
+    whole page is lost.
+
+    The encoding is then stated explicitly rather than left to libxml2.
+    moly.hu announces itself with the HTML5 <meta charset="utf-8">, which
+    older libxml2 builds - such as the one calibre bundles - do not read;
+    they only understand the <meta http-equiv="Content-Type"> spelling. With
+    no encoding it recognises, libxml2 falls back to Latin-1 and every
+    accented character arrives mangled ("Század" -> "SzÃ¡zad").
+    """
+    if isinstance(content, str):
+        content = content.encode("utf-8", errors="replace")
+    # A parser per call: lxml parser objects must not be shared between
+    # threads, and calibre runs identify() on worker threads.
+    return fromstring(content, parser=HTMLParser(encoding="utf-8"))
+
+
 def book_for_id(book_id, fetch_page_content):
     url = f"{BOOK_URL}/{book_id}"
     book_page = fetch_page_content(url)
     if book_page:
-        return Book(xml_root=fromstring(book_page), moly_id=book_id)
+        return Book(xml_root=parse_page(book_page), moly_id=book_id)
     return None
 
 
@@ -93,7 +118,7 @@ def book_page_urls_from_seach_page(xml_root):
 def search(keyword, fetch_page_content):
     search_url = f"{DOMAIN}/kereses?utf8=%E2%9C%93&query=" + quote_plus(keyword)
     content = fetch_page_content(search_url)
-    return book_page_urls_from_seach_page(fromstring(content))
+    return book_page_urls_from_seach_page(parse_page(content))
 
 
 def book_url_for_id(id):
