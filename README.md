@@ -35,6 +35,22 @@ All edition-derived fields (publisher, ISBN, publication date, translator) are
 read from the **first** edition listed on the page, so they always describe the
 same edition.
 
+#### Download from the book list, not from the Edit metadata dialog
+
+**The Download metadata button inside the Edit metadata dialog cannot fill a
+custom column.** That dialog copies a downloaded record with `update_from_mi`
+(`calibre/gui2/metadata/single.py`), which only knows the standard fields:
+title, authors, rating, publisher, tags, identifiers, pubdate, series,
+languages and comments. The custom column widgets keep the values they were
+opened with, and saving the dialog commits those, so the translator is
+discarded before calibre gets anywhere near writing it. No metadata source
+plugin can change this.
+
+Select the book in the library view instead and use **Edit metadata →
+Download metadata and covers** (Ctrl+D). That path applies the record with
+`db.set_metadata`, which does write custom columns. It works with a single
+book selected.
+
 #### Turn off the sources that compete for the same book
 
 **The translator only survives when no other enabled metadata source returns the
