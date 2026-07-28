@@ -155,29 +155,51 @@ class Book:
 
         return series
 
-    def publisher(self):
-        old_publisher = self._publisher(
-            '//*[@id="content"]//*[@class="items"]/div/div[1]/a/text()'
+    def _edition_node(self):
+        # A book page lists one node per edition, each with its own publisher,
+        # year, ISBN and translator. Every edition-derived getter reads from
+        # this single node so the values always describe the same edition; a
+        # book with an old and a re-translated edition would otherwise mix
+        # them. The first edition is used, which is what the positional
+        # lookups below have always effectively picked.
+        editions = self._xml_root.xpath(
+            '//*[@id="content"]//*[@class="items"]'
+            '/div[contains(concat(" ", normalize-space(@class), " "), " edition ")]'
+        ) or self._xml_root.xpath(
+            # Older layouts render the edition without the "edition" class.
+            # The parentheses matter: "(...)[1]" is the first node in the
+            # document, "...[1]" would be the first one under every parent.
+            # Note that "items" is also the class of the review and citation
+            # blocks, hence taking only the first one.
+            '(//*[@id="content"]//*[@class="items"])[1]/div[1]'
         )
+        return editions[0] if editions else None
+
+    def publisher(self):
+        edition = self._edition_node()
+        if edition is None:
+            return None
+        old_publisher = self._publisher(edition, "./div[1]/a/text()")
+        # "+" is the text of the bookmark_button div, which current layouts
+        # render as the first child, pushing the publisher one div further.
         if old_publisher and old_publisher != "+":
             return old_publisher
-        return self._publisher(
-            '//*[@id="content"]//*[@class="items"]/div/div[2]/a/text()'
-        )
+        return self._publisher(edition, "./div[2]/a/text()")
 
-    def _publisher(self, xpath):
-        publisher_node = self._xml_root.xpath(xpath)
+    def _publisher(self, edition, xpath):
+        publisher_node = edition.xpath(xpath)
         if publisher_node:
             return publisher_node[0]
         return None
 
     def publication_date(self):
+        edition = self._edition_node()
+        if edition is None:
+            return None
         # The edition line exposes the full publication date in the tooltip of
         # the "Megjelenés időpontja:" abbreviation, e.g.
         # <abbr title="Megjelenés időpontja: 2025. szeptember 4.">2025</abbr>.
-        titles = self._xml_root.xpath(
-            '//*[@id="content"]//*[@class="items"]//abbr/@title'
-        )
+        titles = edition.xpath(".//abbr/@title")
         for title in titles:
             if "Megjelenés időpontja" in title:
                 date = parse_hungarian_date(title)
@@ -185,12 +207,10 @@ class Book:
                     return date
         # Fallback for editions that only expose a bare year on the edition
         # line (older layouts where the year is plain text, not a tooltip).
-        return self._publication_date(
-            '//*[@id="content"]//*[@class="items"]//text()'
-        )
+        return self._publication_date(edition, ".//text()")
 
-    def _publication_date(self, xpath):
-        publication_node = self._xml_root.xpath(xpath)
+    def _publication_date(self, edition, xpath):
+        publication_node = edition.xpath(xpath)
         for publication_value in publication_node:
             # Match a plausible publication year (1000-2099) that is not part
             # of a longer number. Without the digit guards a bare "\d{4}" would
@@ -213,6 +233,34 @@ class Book:
             if match:
                 return match.group(1)
         return None
+
+    def translator(self):
+        edition = self._edition_node()
+        if edition is None:
+            return None
+        # The translator sits on the same line as the ISBN, behind a
+        # "Fordította" (or "Fordították") label:
+        #   ... <strong>ISBN</strong>: 963... ·
+        #       <strong>Fordította</strong>: <a href="/alkotok/...">Név</a>
+        # The label is the only reliable anchor: the line has no class of its
+        # own, and its position varies between layouts. Collecting every
+        # /alkotok/ link of the line would also pick up other credits such as
+        # "Illusztrálta", so the walk stops at the next label.
+        labels = edition.xpath('.//strong[starts-with(normalize-space(), "Fordít")]')
+        if not labels:
+            return None
+
+        translators = []
+        for sibling in labels[0].itersiblings():
+            if sibling.tag == "strong":
+                break
+            if sibling.tag == "a" and (sibling.get("href") or "").startswith(
+                "/alkotok/"
+            ):
+                name = (sibling.text or "").strip()
+                if name:
+                    translators.append(name)
+        return translators or None
 
     def cover_urls(self):
         book_covers = self._xml_root.xpath('(//*[@class="coverbox"]//a/@href)')
