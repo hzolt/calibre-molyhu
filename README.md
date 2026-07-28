@@ -12,6 +12,30 @@ Supported applications:
 
 Search for book in command-line: `python -m moly_hu.main "raymond feist"`
 
+### Translator custom column (calibre only)
+
+moly.hu credits the translator on the edition line, and the calibre plugin can
+write it into a custom column. Set the lookup name in *Preferences → Metadata
+download → Moly.hu Reloaded* (`#translator` by default, empty disables it).
+
+The column must be of type **"Text, column shown in the Tag browser"** with
+**"Contains names"** ticked. Calibre discards a downloaded custom column value
+without any warning when the type does not match, so the plugin config checks
+the column and warns; if the column does not exist yet, a button there creates
+it (calibre has to be restarted afterwards, as for any new column).
+
+Two limitations worth knowing:
+
+- All edition-derived fields (publisher, ISBN, publication date, translator)
+  are read from the **first** edition listed on the page, so they always
+  describe the same edition.
+- If another enabled metadata source returns a result with the same title and
+  authors, calibre merges the two and rebuilds the record from standard fields
+  only, dropping the translator. Downloading from moly.hu alone is unaffected.
+
+The calibre-web provider does not support this: its `MetaRecord` has no custom
+column concept.
+
 Include it in calibre-web docker yaml:
 ```
 volumes:

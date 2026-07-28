@@ -22,6 +22,7 @@ def test_book_page_v2():
     assert book.publisher() == "Unikornis"
     assert book.publication_date() == datetime.date(1991, 1, 1)
     assert book.isbn() == "9637519416"
+    assert book.translator() == ["Kaposi Tamás"]
     assert book.cover_urls() == [
         "https://moly.hu/system/covers/big/covers_4959.jpg?1395344202"
     ]
@@ -109,6 +110,68 @@ def test_publication_date_falls_back_to_bare_year():
     assert book.publication_date() == datetime.date(2025, 1, 1)
 
 
+def test_edition_fields_come_from_a_single_edition():
+    # A book page lists every edition, each with its own publisher, year, ISBN
+    # and translator. All the edition-derived getters must describe the same
+    # (first) edition, otherwise a book with an old and a re-translated
+    # edition would end up with a year from one and a translator from another.
+    # This page also embeds a copy of an edition inside a review, and reuses
+    # the "items" class for the review and citation blocks.
+    book = read_book("book_page_dennis_e_taylor_mi_bob.htm")
+
+    assert book.publisher() == "Metropolis Media"
+    assert book.publication_date() == datetime.date(2017, 6, 12)
+    assert book.isbn() == "9786155628221"
+    assert book.translator() == ["Oszlánszky Zsolt"]
+
+
+def test_translator_multiple():
+    html = (
+        '<div id="content"><div class="items"><div class="edition edition_1">'
+        '<div><a href="/kiadok/szukits">Szukits</a>, Szeged, 2025 </div>'
+        "<div>404 oldal<span> · </span><strong>ISBN</strong>: 9789634978084"
+        "<span> · </span><strong>Fordította</strong>: "
+        '<a href="/alkotok/kaposi-tamas">Kaposi Tamás</a>, '
+        '<a href="/alkotok/nagy-imre">Nagy Imre</a></div>'
+        "</div></div></div>"
+    )
+    book = Book(fromstring(html))
+
+    assert book.translator() == ["Kaposi Tamás", "Nagy Imre"]
+
+
+def test_translator_ignores_other_credits():
+    # The edition line can credit more than the translator, and every credit
+    # links into the same /alkotok/ namespace. Only the names behind the
+    # "Fordította" label belong to the translator.
+    html = (
+        '<div id="content"><div class="items"><div class="edition edition_1">'
+        '<div><a href="/kiadok/szukits">Szukits</a>, Szeged, 2025 </div>'
+        "<div>404 oldal<span> · </span>"
+        "<strong>Fordította</strong>: "
+        '<a href="/alkotok/kaposi-tamas">Kaposi Tamás</a><span> · </span>'
+        "<strong>Illusztrálta</strong>: "
+        '<a href="/alkotok/rajzolo-bela">Rajzoló Béla</a></div>'
+        "</div></div></div>"
+    )
+    book = Book(fromstring(html))
+
+    assert book.translator() == ["Kaposi Tamás"]
+
+
+def test_translator_is_none_without_label():
+    html = (
+        '<div id="content"><div class="items"><div class="edition edition_1">'
+        '<div><a href="/kiadok/szukits">Szukits</a>, Szeged, 2025 </div>'
+        "<div>404 oldal<span> · </span><strong>ISBN</strong>: 9789634978084"
+        "</div></div></div></div>"
+    )
+    book = Book(fromstring(html))
+
+    assert book.isbn() == "9789634978084"
+    assert book.translator() is None
+
+
 def test_book_with_empty_input():
     book = Book(fromstring("dummy data"))
 
@@ -118,6 +181,7 @@ def test_book_with_empty_input():
     assert book.publisher() == None
     assert book.publication_date() == None
     assert book.isbn() == None
+    assert book.translator() == None
     assert book.cover_urls() == None
     assert book.tags() == None
     assert book.rating() == None
