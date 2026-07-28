@@ -1,7 +1,7 @@
-import re
-
 import os
+import re
 import time
+import unicodedata
 from functools import partial
 
 from calibre import browser
@@ -71,9 +71,19 @@ def only_digits(text):
     return re.sub(r'\D', '', text or '')
 
 
-def normalise(text):
-    """Fold a title down to what two spellings of the same book share."""
-    return re.sub(r'\W+', '', (text or '').replace('​', ''), flags=re.UNICODE).casefold()
+def fold(text):
+    """Strip a title down to what two spellings of the same book share.
+
+    Accents are removed as well as case, so a title that lost its diacritics
+    somewhere still compares equal.
+    """
+    stripped = unicodedata.normalize('NFKD', (text or '').replace('​', ''))
+    return ''.join(c for c in stripped if not unicodedata.combining(c)).casefold()
+
+
+def title_tokens(text):
+    """The set of words in a title, ignoring case, accents and punctuation."""
+    return {word for word in re.split(r'\W+', fold(text), flags=re.UNICODE) if word}
 
 
 def is_match(book, info):
@@ -82,11 +92,20 @@ def is_match(book, info):
     Nothing is written unless this says yes. A search returns a set of hits in
     no meaningful order - the whole back catalogue of the author, typically -
     so picking one without checking would file another book's translator.
+
+    Titles are compared as sets of words rather than as strings, because a
+    translated edition carries both the Hungarian and the original title and
+    the two sides do not agree on the order or the separator: the library may
+    hold "Mégis egymásnak teremtve? - So Not Meant To Be" where moly.hu has
+    "So Not Meant To Be – Mégis egymásnak teremtve?". Requiring the sets to be
+    equal keeps this strict - one title being merely contained in the other is
+    not enough, or "Aliens" would match "A teljes Aliens-gyűjtemény 2."
     """
     isbn = (info.get('identifiers') or {}).get('isbn')
     if isbn and book.isbn() and only_digits(isbn) == only_digits(book.isbn()):
         return True
-    return bool(book.title()) and normalise(book.title()) == normalise(info.get('title'))
+    page = title_tokens(book.title())
+    return bool(page) and page == title_tokens(info.get('title'))
 
 
 def find_book(info, log, abort=None):
