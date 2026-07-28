@@ -12,7 +12,28 @@ Supported applications:
 
 Search for book in command-line: `python -m moly_hu.main "raymond feist"`
 
-### Translator custom column (calibre only)
+### Translator: use the Moly.hu Translator plugin (calibre only)
+
+`scripts/create_calibre_translator_plugin_zip.sh` builds a second, separate
+plugin - calibre loads one plugin class per zip - that adds a **Fetch
+translator from moly.hu** toolbar button. Select books, press it, and it
+writes the translator straight into a custom column with
+`db.new_api.set_field`.
+
+This is the recommended way to fill a translator column, because it runs in
+the GUI with the library at hand and so avoids every limitation listed below:
+it does not go through calibre's merge, it reads the column's real type
+instead of caching it, and it does not depend on which apply dialog is used.
+Set the column in *Preferences → Plugins → Moly.hu Translator*; any column
+type works, and the value is shaped to fit it.
+
+A book is only written when the moly.hu page is confirmed to be the right one
+- by a matching ISBN, or a matching title. moly.hu answers a title search with
+the author's whole back catalogue in no particular order, so an unverified hit
+would file another book's translator. Books that cannot be confirmed are
+reported as not found rather than guessed at.
+
+### Translator custom column via the metadata source (has caveats)
 
 moly.hu credits the translator on the edition line, and the calibre plugin can
 write it into a custom column. Set the lookup name in *Preferences → Metadata
