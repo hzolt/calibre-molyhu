@@ -210,19 +210,33 @@ class MolyhuTranslatorAction(InterfaceAction):
                 self.gui, _('Column not found'),
                 _('There is no %s column in this library.') % column_name, show=True)
 
-        written = {
-            book_id: format_for_column(names, column)
-            for book_id, names in found.items()
-            if db.new_api.has_id(book_id)
-        }
+        written, done_lines = {}, []
+        for book_id, names in found.items():
+            if not db.new_api.has_id(book_id):
+                continue
+            written[book_id] = format_for_column(names, column)
+            done_lines.append('%s: %s' % (
+                db.new_api.field_for('title', book_id), ', '.join(names)))
+
         if written:
             db.new_api.set_field(column_name, written)
             self.gui.library_view.model().refresh_ids(list(written), current_row=-1)
             self.gui.tags_view.recount()
 
-        message = _('Wrote the translator for %(done)d of %(total)d books.') % {
+        # The summary stays to one line and the per book detail goes to
+        # det_msg. info_dialog lays the message out in a word wrapped label
+        # that grows with its content, so a long list of books pushes the
+        # dialog past the edge of the calibre window. det_msg is shown in the
+        # collapsible "Show details" pane instead, which scrolls.
+        summary = _('Wrote the translator for %(done)d of %(total)d books.') % {
             'done': len(written), 'total': len(written) + len(missing)}
+
+        sections = []
+        if done_lines:
+            sections.append(_('Written:') + '\n' + '\n'.join(sorted(done_lines)))
         if missing:
-            message += '\n\n' + _('No translator found for:') + '\n' + '\n'.join(missing)
-        info_dialog(self.gui, _('Translators fetched'), message,
-                    show=True, show_copy_button=bool(missing))
+            sections.append(
+                _('No translator found:') + '\n' + '\n'.join(sorted(missing)))
+
+        info_dialog(self.gui, _('Translators fetched'), summary,
+                    det_msg='\n\n'.join(sections), show=True, show_copy_button=True)
