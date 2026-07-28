@@ -51,6 +51,15 @@ Download metadata and covers** (Ctrl+D). That path applies the record with
 `db.set_metadata`, which does write custom columns. It works with a single
 book selected.
 
+**Let it apply directly - do not use "Review downloaded metadata"** on the
+popup that appears when the download finishes. The review dialog
+(`CompareMany` in `calibre/gui2/metadata/diff.py`) builds its editors from a
+list of standard fields and has no custom column support at all, so choosing
+it discards the translator just as the Edit metadata dialog does.
+
+Only the plain apply reaches `db.set_metadata`, which is the one place in
+calibre that copies custom columns out of a downloaded record.
+
 #### Turn off the sources that compete for the same book
 
 **The translator only survives when no other enabled metadata source returns the
