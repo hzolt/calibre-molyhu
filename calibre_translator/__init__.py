@@ -13,12 +13,13 @@ prefs = JSONConfig('plugins/moly_hu_translator')
 prefs.defaults['translator_column'] = '#translator'
 prefs.defaults['rating_column'] = '#moly_rating'
 prefs.defaults['rating_count_column'] = '#moly_rating_count'
+prefs.defaults['statistics_url_column'] = '#moly_stats_raw'
 
 
 class MolyhuTranslator(InterfaceActionBase):
     name = 'Moly.hu Translator'
-    description = ('Writes the moly.hu translator, rating and rating count into '
-                   'custom columns for the selected books.')
+    description = ('Writes the moly.hu translator, rating, rating count and '
+                   'statistics page URL into custom columns for the selected books.')
     author = 'Imre NAGY'
     version = (0, 0, 0)
     minimum_calibre_version = (5, 0, 0)
