@@ -48,6 +48,7 @@ FIELDS = (
     ('translator', 'translator_column', _('Translator')),
     ('rating', 'rating_column', _('Rating')),
     ('rating_count', 'rating_count_column', _('Rating count')),
+    ('statistics_url', 'statistics_url_column', _('Statistics URL')),
 )
 
 
@@ -56,11 +57,15 @@ def read_fields(book):
 
     The rating is the percentage moly.hu displays rather than Book.rating(),
     which rounds it onto calibre's 0-5 scale and so cannot tell 90% from 94%.
+
+    The statistics URL costs no extra page open: the book page already links
+    to it, and where it does not the address follows from the book's id.
     """
     return {
         'translator': book.translator(),
         'rating': book.rating_percent(),
         'rating_count': book.rating_count(),
+        'statistics_url': book.statistics_url(),
     }
 
 
@@ -85,6 +90,8 @@ def format_for_column(value, column):
     """
     if isinstance(value, list):
         return format_names_for_column(value, column)
+    if isinstance(value, str):
+        return format_text_for_column(value, column)
     return format_number_for_column(value, column)
 
 
@@ -97,6 +104,15 @@ def format_names_for_column(names, column):
     if is_multiple:
         return list(names)
     return (is_multiple.get('list_to_ui') or ', ').join(names)
+
+
+def format_text_for_column(text, column):
+    """Text goes in as it stands, except into a multi-value column, which
+    takes a list and would otherwise split the text on its separator.
+    """
+    if column.get('is_multiple'):
+        return [text]
+    return text
 
 
 def format_number_for_column(value, column):
@@ -266,8 +282,8 @@ class MolyhuTranslatorAction(InterfaceAction):
     action_spec = (
         _('Fetch data from moly.hu'),
         None,
-        _('Write the moly.hu translator, rating and rating count of the '
-          'selected books into custom columns'),
+        _('Write the moly.hu translator, rating, rating count and statistics '
+          'page URL of the selected books into custom columns'),
         None,
     )
     action_type = 'current'

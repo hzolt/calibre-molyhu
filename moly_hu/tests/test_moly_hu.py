@@ -174,6 +174,29 @@ def test_rating_is_read_from_the_book_and_not_from_a_review():
     assert book.rating() == 4
 
 
+def test_statistics_url_comes_from_the_page():
+    # The "95 csillagozás" link the book page already carries, so no id is
+    # needed to find the statistics page.
+    book = read_book("book_page_dennis_e_taylor_mi_bob.htm")
+
+    assert (
+        book.statistics_url()
+        == "https://moly.hu/konyvek/dennis-e-taylor-mi-bob/statisztika"
+    )
+
+
+def test_statistics_url_falls_back_to_the_id():
+    # A book nobody has rated yet renders no "csillagozás" link at all, but
+    # its statistics page exists and its address follows from the id.
+    html = '<div id="content"><h1>Egy könyv</h1></div>'
+    book = Book(fromstring(html), moly_id="egy-szerzo-egy-konyv")
+
+    assert (
+        book.statistics_url()
+        == "https://moly.hu/konyvek/egy-szerzo-egy-konyv/statisztika"
+    )
+
+
 def test_rating_is_read_from_the_embedded_json():
     # A book with few ratings does not render the percentage in the header the
     # way a well read one does, so the header scrape finds nothing. The
@@ -314,6 +337,7 @@ def test_book_with_empty_input():
     assert book.rating() == None
     assert book.rating_percent() == None
     assert book.rating_count() == None
+    assert book.statistics_url() == None
     assert book.languages() == None
     assert book.description() == None
 

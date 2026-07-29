@@ -89,6 +89,9 @@ class ConfigWidget(QWidget):
                       _('Custom column for the rating (0-100):'), 'rating_column'),
             ColumnRow(self, layout,
                       _('Custom column for the rating count:'), 'rating_count_column'),
+            ColumnRow(self, layout,
+                      _('Custom column for the statistics page URL:'),
+                      'statistics_url_column'),
         ]
         layout.addStretch()
 

@@ -19,7 +19,7 @@ from calibre. Each front end copies it into its own package at build time:
 | Artifact | Built by | What it does |
 |---|---|---|
 | **Moly.hu Reloaded** | `scripts/create_calibre_plugin_zip.sh` | calibre metadata source: title, authors, series, publisher, publication date, ISBN, tags, rating, comments, covers |
-| **Moly.hu Translator** | `scripts/create_calibre_translator_plugin_zip.sh` | calibre toolbar button that writes the translator, rating and rating count into custom columns |
+| **Moly.hu Translator** | `scripts/create_calibre_translator_plugin_zip.sh` | calibre toolbar button that writes the translator, rating, rating count and statistics page URL into custom columns |
 | **calibre-web provider** | `scripts/create_calibreweb_plugin_zip.sh` | the same metadata for calibre-web |
 
 The two calibre plugins are separate because calibre loads exactly one plugin
@@ -31,7 +31,7 @@ library. Install both if you want the translator.
 ### Moly.hu Translator
 
 Adds a **Fetch data from moly.hu** toolbar button. Select books, press it, and
-three values off the moly.hu book page are written into custom columns with
+four values off the moly.hu book page are written into custom columns with
 `db.new_api.set_field`:
 
 | Field | Default column | What it holds |
@@ -39,17 +39,23 @@ three values off the moly.hu book page are written into custom columns with
 | Translator | `#translator` | the names behind the edition's "Fordította" label |
 | Rating | `#moly_rating` | the score as moly.hu shows it, a percentage from 0 to 100 (`94%` → `94`) |
 | Rating count | `#moly_rating_count` | how many people rated it, from the "62 csillagozás" link |
+| Statistics URL | `#moly_stats_raw` | the book's `/statisztika` page, e.g. `https://moly.hu/konyvek/dennis-e-taylor-mi-bob/statisztika` |
 
 The rating is kept as the percentage rather than as calibre's 0-5 stars, which
 cannot tell 90% from 94%. The metadata source plugin still fills calibre's own
 rating field with the rounded 0-5 value; these columns are separate from it.
+
+The statistics URL costs no extra page open: the book page links to it from
+the "csillagozás" anchor, and a book too new to have that anchor still has the
+page, whose address follows from the book's id. In a short text column calibre
+renders it as a clickable link in *Book details*.
 
 Set the columns in *Preferences → Plugins → Moly.hu Translator*. Any column
 type works: the value is shaped to fit whatever is there, because calibre
 rejects a value whose datatype does not match the column, and a column's type
 cannot be changed once it has been created. Leaving a column blank, or naming
 one that does not exist in the library, simply skips that field; the run only
-refuses to start when none of the three resolve.
+refuses to start when none of them resolve.
 
 Each field is written on its own, so a book whose page carries a rating but no
 translator still gets its rating.

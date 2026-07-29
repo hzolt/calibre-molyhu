@@ -8,6 +8,9 @@ from lxml.html import HTMLParser, fromstring
 
 DOMAIN = "https://moly.hu"
 BOOK_URL = DOMAIN + "/konyvek"
+# The book page's statistics sub-page, holding the breakdown behind the single
+# average the book page shows.
+STATISTICS_PATH = "statisztika"
 
 HUNGARIAN_MONTHS = {
     "január": 1,
@@ -148,6 +151,10 @@ def search(keyword, fetch_page_content):
 
 def book_url_for_id(id):
     return f"{BOOK_URL}/{id}"
+
+
+def statistics_url_for_id(id):
+    return f"{book_url_for_id(id)}/{STATISTICS_PATH}"
 
 
 # FIXME(crash): add isvalid() method to check the required values (id, isbn, title etc.)
@@ -406,6 +413,20 @@ class Book:
                 return percent
         return parse_decimal(self._rating_percent_text())
 
+    def _statistic_link(self):
+        """The "62 csillagozás" anchor, which both names the rating count and
+        points at the book's statistics page.
+
+        The class is "statistic_link modal", hence the concat() match rather
+        than an equality test. A book nobody has rated yet does not render the
+        anchor at all.
+        """
+        nodes = self._xml_root.xpath(
+            '//*[@id="content"]//a'
+            '[contains(concat(" ", normalize-space(@class), " "), " statistic_link ")]'
+        )
+        return nodes[0] if nodes else None
+
     def rating_count(self):
         """How many people rated the book: the "62 csillagozás" figure."""
         stated = (self._aggregate_rating() or {}).get("ratingCount")
@@ -413,14 +434,24 @@ class Book:
             count = parse_count(stated)
             if count is not None:
                 return count
-        # The class is "statistic_link modal", hence the concat() match rather
-        # than an equality test.
-        count_node = self._xml_root.xpath(
-            '//*[@id="content"]//a'
-            '[contains(concat(" ", normalize-space(@class), " "), " statistic_link ")]'
-            "/text()"
-        )
-        return parse_count(count_node[0]) if count_node else None
+        link = self._statistic_link()
+        return parse_count(link.text) if link is not None and link.text else None
+
+    def statistics_url(self):
+        """Where moly.hu breaks the ratings down, e.g.
+        https://moly.hu/konyvek/dennis-e-taylor-mi-bob/statisztika
+
+        The page's own link is preferred so that a change of path on moly.hu
+        follows automatically. An unrated book carries no such link, so the
+        URL is built from the id instead - the page exists either way.
+        """
+        link = self._statistic_link()
+        href = link.get("href") if link is not None else None
+        if href:
+            return href if href.startswith("http") else DOMAIN + href
+        if self._moly_id:
+            return statistics_url_for_id(self._moly_id)
+        return None
 
     def languages(self):
         tags = self.tags()
