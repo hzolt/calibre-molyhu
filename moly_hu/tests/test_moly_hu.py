@@ -174,6 +174,61 @@ def test_rating_is_read_from_the_book_and_not_from_a_review():
     assert book.rating() == 4
 
 
+def test_rating_is_read_from_the_embedded_json():
+    # A book with few ratings does not render the percentage in the header the
+    # way a well read one does, so the header scrape finds nothing. The
+    # schema.org block in the head states it either way. Taken from the page
+    # of "Földvári-Oláh Csaba: Szeánsz", which reported a rating count but no
+    # rating until this was read.
+    html = (
+        '<html><head><script type="application/ld+json">\n'
+        '{"@context": "https://schema.org/", "@type": "Book",\n'
+        ' "name": "Földvári-Oláh Csaba: Szeánsz",\n'
+        ' "aggregateRating": {"@type": "AggregateRating",\n'
+        '                     "ratingValue": "90%", "ratingCount": "5"}}\n'
+        "</script></head><body>"
+        '<div id="content"><span class="stat">'
+        '<a class="statistic_link modal" href="/konyvek/x/statisztika">'
+        "5 csillagozás</a></span></div></body></html>"
+    )
+    book = Book(fromstring(html))
+
+    assert book.rating_percent() == 90.0
+    assert book.rating_count() == 5
+    # 90% * 0.05 is 4.5, and round() breaks a tie towards the even number.
+    assert book.rating() == 4
+
+
+def test_rating_falls_back_to_the_header_when_the_json_is_not_a_percentage():
+    # schema.org means ratingValue to be a score out of bestRating, so a value
+    # without a "%" is not the percentage this reads and must not be taken for
+    # one - 4.5 is not 4.5%.
+    html = (
+        '<html><head><script type="application/ld+json">\n'
+        '{"@type": "Book", "aggregateRating": {"ratingValue": "4.5",\n'
+        '                                      "ratingCount": "62"}}\n'
+        "</script></head><body>"
+        '<div id="content"><span class="stat">'
+        '<span class="rating"><span class="like_count">94%</span></span>'
+        "</span></div></body></html>"
+    )
+    book = Book(fromstring(html))
+
+    assert book.rating_percent() == 94.0
+    assert book.rating_count() == 62
+
+
+def test_rating_is_read_when_the_classes_carry_a_second_token():
+    html = (
+        '<div id="content"><span class="stat">'
+        '<span class="rating fade"><span class="like_count small">73%</span></span>'
+        "</span></div>"
+    )
+    book = Book(fromstring(html))
+
+    assert book.rating_percent() == 73.0
+
+
 def test_rating_count_strips_grouped_thousands():
     # moly.hu groups thousands with a space, ordinary or non-breaking.
     html = (
