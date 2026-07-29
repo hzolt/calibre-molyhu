@@ -1,4 +1,5 @@
 import datetime
+import json
 import re
 from urllib.parse import quote_plus
 
@@ -47,6 +48,30 @@ def parse_hungarian_date(text):
     year = re.search(r"(?<!\d)(1\d{3}|20\d{2})(?!\d)", text)
     if year:
         return datetime.date(int(year.group(1)), 1, 1)
+    return None
+
+
+def parse_decimal(text):
+    """The first number in a string, or None. Hungarian decimals use a comma."""
+    if text is None:
+        return None
+    match = re.search(r"\d+(?:[.,]\d+)?", str(text))
+    if match:
+        return float(match.group().replace(",", "."))
+    return None
+
+
+def parse_count(text):
+    """The first whole number in a string, or None.
+
+    moly.hu groups thousands with a space, ordinary or non-breaking, which has
+    to go before the digits read as one number.
+    """
+    if text is None:
+        return None
+    match = re.search(r"\d[\d\s]*", str(text))
+    if match:
+        return int(re.sub(r"\s", "", match.group()))
     return None
 
 
@@ -306,6 +331,39 @@ class Book:
             return tags
         return None
 
+    def _aggregate_rating(self):
+        """The schema.org rating block moly.hu embeds in the page head.
+
+        The head states the score and the number of ratings outright:
+
+            <script type="application/ld+json">
+            {"@type": "Book", "name": "...",
+             "aggregateRating": {"@type": "AggregateRating",
+                                 "ratingValue": "90%", "ratingCount": "5"}}
+            </script>
+
+        Preferred over the header markup because it does not depend on how the
+        page is laid out. The header renders the percentage differently for a
+        book with few ratings, and reading it there comes back empty on
+        exactly those pages, while this block still states the number.
+        """
+        for block in self._xml_root.xpath(
+            '//script[@type="application/ld+json"]/text()'
+        ):
+            try:
+                data = json.loads(block)
+            except ValueError:
+                continue
+            # A page may carry several blocks, and a block may carry several
+            # records, only one of which is the book.
+            for record in data if isinstance(data, list) else [data]:
+                if not isinstance(record, dict):
+                    continue
+                rating = record.get("aggregateRating")
+                if isinstance(rating, dict):
+                    return rating
+        return None
+
     def _rating_percent_text(self):
         # The header of a book page carries the score as a percentage:
         #   <span class="stat"><span class="rating">
@@ -314,9 +372,13 @@ class Book:
         # "like_count" is also the class of the score on every review block
         # further down the page, dozens of them, and those are under #content
         # too. The "rating" ancestor is what keeps them out, so it has to stay
-        # in the path.
+        # in the path. Both classes are matched a token at a time, because
+        # either can be rendered alongside a second one.
         nodes = self._xml_root.xpath(
-            '//*[@id="content"]//*[@class="rating"]//*[@class="like_count"]/text()'
+            '//*[@id="content"]'
+            '//*[contains(concat(" ", normalize-space(@class), " "), " rating ")]'
+            '//*[contains(concat(" ", normalize-space(@class), " "), " like_count ")]'
+            "/text()"
         )
         return nodes[0] if nodes else None
 
@@ -333,34 +395,32 @@ class Book:
         it - 90% and 94% are both 5 stars. This keeps the number as it stands
         on the page, for a column that can hold it.
         """
-        text = self._rating_percent_text()
-        if text is None:
-            return None
-        # Hungarian pages write a decimal with a comma. The percentage itself
-        # is always whole, but the corrected average in the tooltip is not, so
-        # accept both rather than raise if the layout ever swaps them.
-        match = re.search(r"\d+(?:[.,]\d+)?", text)
-        if match:
-            return float(match.group().replace(",", "."))
-        return None
+        stated = (self._aggregate_rating() or {}).get("ratingValue")
+        # Only taken when it is written as a percentage. schema.org means
+        # ratingValue to be a score out of bestRating, so a day when moly.hu
+        # makes the field conform would otherwise turn a 4.5 into 4.5%. The
+        # header still shows the percentage and is read instead.
+        if stated is not None and "%" in str(stated):
+            percent = parse_decimal(stated)
+            if percent is not None:
+                return percent
+        return parse_decimal(self._rating_percent_text())
 
     def rating_count(self):
-        """How many people rated the book, from the "62 csillagozás" link."""
+        """How many people rated the book: the "62 csillagozás" figure."""
+        stated = (self._aggregate_rating() or {}).get("ratingCount")
+        if stated is not None:
+            count = parse_count(stated)
+            if count is not None:
+                return count
+        # The class is "statistic_link modal", hence the concat() match rather
+        # than an equality test.
         count_node = self._xml_root.xpath(
             '//*[@id="content"]//a'
             '[contains(concat(" ", normalize-space(@class), " "), " statistic_link ")]'
             "/text()"
         )
-        if not count_node:
-            return None
-        # The class is "statistic_link modal", hence the concat() match rather
-        # than an equality test. Thousands are grouped with a space (ordinary
-        # or non-breaking), which has to go before int() will take the digits.
-        digits = re.sub(r"[\s ]", "", count_node[0].strip())
-        match = re.match(r"\d+", digits)
-        if match:
-            return int(match.group())
-        return None
+        return parse_count(count_node[0]) if count_node else None
 
     def languages(self):
         tags = self.tags()
