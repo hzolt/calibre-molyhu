@@ -306,12 +306,60 @@ class Book:
             return tags
         return None
 
-    def rating(self):
-        rating_node = self._xml_root.xpath(
+    def _rating_percent_text(self):
+        # The header of a book page carries the score as a percentage:
+        #   <span class="stat"><span class="rating">
+        #     <span class="like_count" title="...">94%</span>
+        #   </span>...
+        # "like_count" is also the class of the score on every review block
+        # further down the page, dozens of them, and those are under #content
+        # too. The "rating" ancestor is what keeps them out, so it has to stay
+        # in the path.
+        nodes = self._xml_root.xpath(
             '//*[@id="content"]//*[@class="rating"]//*[@class="like_count"]/text()'
         )
-        if rating_node:
-            return round(float(rating_node[0].strip("%").strip()) * 0.05)
+        return nodes[0] if nodes else None
+
+    def rating(self):
+        percent = self.rating_percent()
+        if percent is None:
+            return None
+        return round(percent * 0.05)
+
+    def rating_percent(self):
+        """The score as moly.hu shows it: a percentage from 0 to 100.
+
+        ``rating()`` rounds this onto calibre's 0-5 scale, which loses most of
+        it - 90% and 94% are both 5 stars. This keeps the number as it stands
+        on the page, for a column that can hold it.
+        """
+        text = self._rating_percent_text()
+        if text is None:
+            return None
+        # Hungarian pages write a decimal with a comma. The percentage itself
+        # is always whole, but the corrected average in the tooltip is not, so
+        # accept both rather than raise if the layout ever swaps them.
+        match = re.search(r"\d+(?:[.,]\d+)?", text)
+        if match:
+            return float(match.group().replace(",", "."))
+        return None
+
+    def rating_count(self):
+        """How many people rated the book, from the "62 csillagozás" link."""
+        count_node = self._xml_root.xpath(
+            '//*[@id="content"]//a'
+            '[contains(concat(" ", normalize-space(@class), " "), " statistic_link ")]'
+            "/text()"
+        )
+        if not count_node:
+            return None
+        # The class is "statistic_link modal", hence the concat() match rather
+        # than an equality test. Thousands are grouped with a space (ordinary
+        # or non-breaking), which has to go before int() will take the digits.
+        digits = re.sub(r"[\s ]", "", count_node[0].strip())
+        match = re.match(r"\d+", digits)
+        if match:
+            return int(match.group())
         return None
 
     def languages(self):

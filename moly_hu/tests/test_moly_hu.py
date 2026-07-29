@@ -32,6 +32,8 @@ def test_book_page_v2():
         "https://moly.hu/system/covers/big/covers_4959.jpg?1395344202"
     ]
     assert book.rating() == 5
+    assert book.rating_percent() == 94.0
+    assert book.rating_count() == 62
     assert book.languages() == ["hu"]
 
     expected_tags = [
@@ -160,6 +162,41 @@ def test_edition_fields_come_from_a_single_edition():
     assert book.translator() == ["Oszlánszky Zsolt"]
 
 
+def test_rating_is_read_from_the_book_and_not_from_a_review():
+    # Every review on the page carries its own "like_count", and this page
+    # renders its title in a bare <h1> rather than the <h1 class="book"> of
+    # newer layouts, so neither the class alone nor the heading can be the
+    # anchor for the book's own score.
+    book = read_book("book_page_dennis_e_taylor_mi_bob.htm")
+
+    assert book.rating_percent() == 84.0
+    assert book.rating_count() == 95
+    assert book.rating() == 4
+
+
+def test_rating_count_strips_grouped_thousands():
+    # moly.hu groups thousands with a space, ordinary or non-breaking.
+    html = (
+        '<div id="content"><span class="stat">'
+        '<span class="rating"><span class="like_count">92%</span></span>'
+        '<a class="statistic_link modal" href="/konyvek/x/statisztika">'
+        "1 234 csillagozás</a></span></div>"
+    )
+    book = Book(fromstring(html))
+
+    assert book.rating_percent() == 92.0
+    assert book.rating_count() == 1234
+
+
+def test_rating_is_none_without_the_stat_block():
+    html = '<div id="content"><h1>Egy könyv</h1></div>'
+    book = Book(fromstring(html))
+
+    assert book.rating_percent() is None
+    assert book.rating_count() is None
+    assert book.rating() is None
+
+
 def test_translator_multiple():
     html = (
         '<div id="content"><div class="items"><div class="edition edition_1">'
@@ -220,6 +257,8 @@ def test_book_with_empty_input():
     assert book.cover_urls() == None
     assert book.tags() == None
     assert book.rating() == None
+    assert book.rating_percent() == None
+    assert book.rating_count() == None
     assert book.languages() == None
     assert book.description() == None
 
