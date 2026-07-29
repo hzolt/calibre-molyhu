@@ -11,11 +11,14 @@ from calibre.utils.config import JSONConfig
 
 prefs = JSONConfig('plugins/moly_hu_translator')
 prefs.defaults['translator_column'] = '#translator'
+prefs.defaults['rating_column'] = '#moly_rating'
+prefs.defaults['rating_count_column'] = '#moly_rating_count'
 
 
 class MolyhuTranslator(InterfaceActionBase):
     name = 'Moly.hu Translator'
-    description = 'Writes the moly.hu translator into a custom column for the selected books.'
+    description = ('Writes the moly.hu translator, rating and rating count into '
+                   'custom columns for the selected books.')
     author = 'Imre NAGY'
     version = (0, 0, 0)
     minimum_calibre_version = (5, 0, 0)

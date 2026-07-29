@@ -2,7 +2,6 @@ import os
 import re
 import time
 import unicodedata
-from functools import partial
 
 from calibre import browser
 from calibre.constants import config_dir
@@ -41,18 +40,79 @@ def write_log_file(job):
         return None
 
 
-def format_for_column(translators, column):
-    """Shape the names to match the column they are written into.
+# What the action reads off a moly.hu page and writes into the library: the
+# key of the value in a result record, the preference holding the name of the
+# column it goes into, and the label it is reported under in the log and the
+# summary. Everything that has to happen once per field is driven by this.
+FIELDS = (
+    ('translator', 'translator_column', _('Translator')),
+    ('rating', 'rating_column', _('Rating')),
+    ('rating_count', 'rating_count_column', _('Rating count')),
+)
 
-    A multi-value column takes the list as it is; a single-value one would
+
+def read_fields(book):
+    """Everything the action writes, read off one moly.hu page.
+
+    The rating is the percentage moly.hu displays rather than Book.rating(),
+    which rounds it onto calibre's 0-5 scale and so cannot tell 90% from 94%.
+    """
+    return {
+        'translator': book.translator(),
+        'rating': book.rating_percent(),
+        'rating_count': book.rating_count(),
+    }
+
+
+def describe_value(value):
+    """A value as it reads in the log and in the summary."""
+    if value is None:
+        return ''
+    if isinstance(value, list):
+        return ', '.join(value)
+    if isinstance(value, float) and value.is_integer():
+        # The percentages are whole numbers; "94" beats "94.0" in a report.
+        return str(int(value))
+    return str(value)
+
+
+def format_for_column(value, column):
+    """Shape a value to match the column it is written into.
+
+    Calibre refuses a value whose shape does not match the column, and a
+    column's type cannot be changed once created, so this follows the library
+    rather than the other way round.
+    """
+    if isinstance(value, list):
+        return format_names_for_column(value, column)
+    return format_number_for_column(value, column)
+
+
+def format_names_for_column(names, column):
+    """A multi-value column takes the list as it is; a single-value one would
     reject it, so the names are joined with the separator the column uses to
-    display a list. Calibre refuses a value whose shape does not match the
-    column, so this has to follow the library rather than the other way round.
+    display a list.
     """
     is_multiple = column.get('is_multiple') or {}
     if is_multiple:
-        return list(translators)
-    return (is_multiple.get('list_to_ui') or ', ').join(translators)
+        return list(names)
+    return (is_multiple.get('list_to_ui') or ', ').join(names)
+
+
+def format_number_for_column(value, column):
+    """Numbers carry a type, so the column's own type decides the shape."""
+    datatype = column.get('datatype')
+    if datatype == 'float':
+        return float(value)
+    if datatype == 'int':
+        return int(round(value))
+    if datatype == 'rating':
+        # A calibre rating is 0-10 half stars, so a percentage has to be
+        # rescaled rather than handed over as it stands.
+        return max(0, min(10, int(round(value / 10.0))))
+    if column.get('is_multiple'):
+        return [describe_value(value)]
+    return describe_value(value)
 
 
 def fetch_page(url):
@@ -145,19 +205,21 @@ def find_book(info, log, abort=None):
     return None
 
 
-def log_book(log, book, translators):
+def log_book(log, book, values):
     """Report a match in the same shape as the metadata download log."""
     log('Found 1 results')
-    for label, value in (
+    rows = [
         ('Title', book.title()),
         ('Author(s)', ' & '.join(book.authors() or [])),
         ('Publisher', book.publisher()),
-        ('Translator', ', '.join(translators or [])),
-    ):
+    ]
+    rows.extend((label, describe_value(values.get(key)))
+                for key, pref_key, label in FIELDS)
+    for label, value in rows:
         log('%-20s: %s' % (label, value or ''))
 
 
-def fetch_translators(books, abort=None, log=None, notifications=None):
+def fetch_book_data(books, abort=None, log=None, notifications=None):
     """Job body: look every book up on moly.hu. Runs off the GUI thread."""
     found, missing = {}, []
     total = max(len(books), 1)
@@ -180,13 +242,17 @@ def fetch_translators(books, abort=None, log=None, notifications=None):
             missing.append(title)
             continue
 
-        translators = book.translator() if book else None
-        if translators:
-            found[book_id] = translators
-            log_book(log, book, translators)
+        # Each field stands on its own: a page with a rating but no translator
+        # is still worth writing, so anything the page does carry is kept.
+        values = {key: value
+                  for key, value in (read_fields(book) if book else {}).items()
+                  if value is not None}
+        if values:
+            found[book_id] = values
+            log_book(log, book, values)
         else:
             missing.append(title)
-            log('Found 0 results' if book is None else 'No translator on the page')
+            log('Found 0 results' if book is None else 'Nothing to write from the page')
         log('Downloading from moly.hu took %s' % (time.time() - book_started))
 
     log('\n' + '=' * 78)
@@ -198,9 +264,10 @@ def fetch_translators(books, abort=None, log=None, notifications=None):
 class MolyhuTranslatorAction(InterfaceAction):
     name = 'Moly.hu Translator'
     action_spec = (
-        _('Fetch translator from moly.hu'),
+        _('Fetch data from moly.hu'),
         None,
-        _('Write the moly.hu translator of the selected books into a custom column'),
+        _('Write the moly.hu translator, rating and rating count of the '
+          'selected books into custom columns'),
         None,
     )
     action_type = 'current'
@@ -225,26 +292,37 @@ class MolyhuTranslatorAction(InterfaceAction):
         except NameError:
             return None
 
-    def start(self):
-        column_name = (prefs['translator_column'] or '').strip()
-        if not column_name:
-            return error_dialog(
-                self.gui, _('No column configured'),
-                _('Set the custom column to write the translator into in the '
-                  'plugin configuration first.'), show=True)
+    def resolve_columns(self, db):
+        """The configured columns that exist in this library, keyed by field.
 
+        A field whose column is unset or absent is simply not written, so one
+        missing column does not cost the run the other two.
+        """
+        metadata = db.new_api.field_metadata.custom_field_metadata()
+        columns = {}
+        for key, pref_key, label in FIELDS:
+            name = (prefs[pref_key] or '').strip()
+            if not name:
+                continue
+            column = metadata.get(name)
+            if column is not None:
+                columns[key] = (name, column)
+        return columns
+
+    def start(self):
         db = self.gui.current_db
-        column = db.new_api.field_metadata.custom_field_metadata().get(column_name)
-        if column is None:
+        if not self.resolve_columns(db):
             return error_dialog(
-                self.gui, _('Column not found'),
-                _('There is no %s column in this library.') % column_name, show=True)
+                self.gui, _('No columns configured'),
+                _('Set at least one custom column to write into in the plugin '
+                  'configuration first, and make sure it exists in this '
+                  'library.'), show=True)
 
         rows = self.gui.library_view.selectionModel().selectedRows()
         if not rows:
             return error_dialog(
                 self.gui, _('No books selected'),
-                _('Select the books to fetch the translator for.'), show=True)
+                _('Select the books to fetch the data for.'), show=True)
 
         model = self.gui.library_view.model()
         books = {}
@@ -265,38 +343,52 @@ class MolyhuTranslatorAction(InterfaceAction):
         # back to it through a queued signal.
         job = ThreadedJob(
             'moly_hu_translator',
-            _('Fetching translators from moly.hu for %d books') % len(books),
-            fetch_translators, (books,), {},
-            Dispatcher(partial(self.finished, column_name=column_name)),
+            _('Fetching data from moly.hu for %d books') % len(books),
+            fetch_book_data, (books,), {},
+            Dispatcher(self.finished),
         )
         self.gui.job_manager.run_threaded_job(job)
-        self.gui.status_bar.show_message(_('Fetching translators from moly.hu'), 3000)
+        self.gui.status_bar.show_message(_('Fetching data from moly.hu'), 3000)
 
-    def finished(self, job, column_name):
+    def finished(self, job):
         if job.failed:
-            return self.gui.job_exception(job, dialog_title=_('Failed to fetch translators'))
+            return self.gui.job_exception(job, dialog_title=_('Failed to fetch data'))
 
         found, missing = job.result
         db = self.gui.current_db
-        # Re-read the column: the job ran while the GUI stayed live, so the
+        # Re-read the columns: the job ran while the GUI stayed live, so the
         # library could have changed underneath it.
-        column = db.new_api.field_metadata.custom_field_metadata().get(column_name)
-        if column is None:
+        columns = self.resolve_columns(db)
+        if not columns:
             return error_dialog(
-                self.gui, _('Column not found'),
-                _('There is no %s column in this library.') % column_name, show=True)
+                self.gui, _('No columns configured'),
+                _('None of the configured columns exist in this library any more.'),
+                show=True)
 
-        written, done_lines = {}, []
-        for book_id, names in found.items():
+        # One set_field per column rather than per book: it is a single bulk
+        # write, and the three fields do not necessarily cover the same books.
+        writes, done_lines = {}, []
+        for book_id, values in found.items():
             if not db.new_api.has_id(book_id):
                 continue
-            written[book_id] = format_for_column(names, column)
-            done_lines.append('%s: %s' % (
-                db.new_api.field_for('title', book_id), ', '.join(names)))
+            reported = []
+            for key, pref_key, label in FIELDS:
+                target, value = columns.get(key), values.get(key)
+                if target is None or value is None:
+                    continue
+                name, column = target
+                writes.setdefault(name, {})[book_id] = format_for_column(value, column)
+                reported.append('%s: %s' % (label, describe_value(value)))
+            if reported:
+                done_lines.append('%s - %s' % (
+                    db.new_api.field_for('title', book_id), ', '.join(reported)))
 
-        if written:
-            db.new_api.set_field(column_name, written)
-            self.gui.library_view.model().refresh_ids(list(written), current_row=-1)
+        touched = set()
+        for name, values_by_id in writes.items():
+            db.new_api.set_field(name, values_by_id)
+            touched.update(values_by_id)
+        if touched:
+            self.gui.library_view.model().refresh_ids(list(touched), current_row=-1)
             self.gui.tags_view.recount()
 
         # The summary stays to one line and the per book detail goes to
@@ -304,19 +396,19 @@ class MolyhuTranslatorAction(InterfaceAction):
         # that grows with its content, so a long list of books pushes the
         # dialog past the edge of the calibre window. det_msg is shown in the
         # collapsible "Show details" pane instead, which scrolls.
-        summary = _('Wrote the translator for %(done)d of %(total)d books.') % {
-            'done': len(written), 'total': len(written) + len(missing)}
+        summary = _('Wrote data for %(done)d of %(total)d books.') % {
+            'done': len(done_lines), 'total': len(found) + len(missing)}
 
         sections = []
         if done_lines:
             sections.append(_('Written:') + '\n' + '\n'.join(sorted(done_lines)))
         if missing:
             sections.append(
-                _('No translator found:') + '\n' + '\n'.join(sorted(missing)))
+                _('No data found:') + '\n' + '\n'.join(sorted(missing)))
 
         log_path = write_log_file(job)
         if log_path:
             summary += '\n' + _('Log: %s') % log_path
 
-        info_dialog(self.gui, _('Translators fetched'), summary,
+        info_dialog(self.gui, _('Data fetched'), summary,
                     det_msg='\n\n'.join(sections), show=True, show_copy_button=True)
