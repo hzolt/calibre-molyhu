@@ -1,2 +1,7 @@
 __pycache__/
 *.py[cod]
+
+# Plugin zips built by scripts/create_*_zip.sh. They are regenerated on
+# demand, and CI builds them from a tag, so they do not belong in the
+# repository.
+*.zip
