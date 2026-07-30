@@ -72,14 +72,19 @@ class Molyhu(Source):
         # articles, punctuation and ZWJ noise that can throw off moly.hu's
         # search. The cleaned values are fed into the same term-builder so the
         # ISBN -> author+title -> title fallback order is preserved.
-        clean_title = ' '.join(self.get_title_tokens(title)) if title else title
+        #
+        # The title is handed over raw and tokenized by the callback instead,
+        # because the term-builder first splits it at the colon or dash that
+        # moly.hu turns into a subtitle - and get_title_tokens replaces exactly
+        # that punctuation with a space, leaving nothing to split on.
         clean_authors = (
             [' '.join(self.get_author_tokens(authors, only_first_author=True))]
             if authors
             else authors
         )
         search_terms = moly_hu.generate_search_terms(
-            clean_title, clean_authors, identifiers
+            title, clean_authors, identifiers,
+            normalise_title=lambda text: ' '.join(self.get_title_tokens(text)),
         )
         log.info(f'Search terms: {search_terms}')
 

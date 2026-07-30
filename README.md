@@ -39,16 +39,18 @@ four values off the moly.hu book page are written into custom columns with
 | Translator | `#translator` | the names behind the edition's "Fordította" label |
 | Rating | `#moly_rating` | the score as moly.hu shows it, a percentage from 0 to 100 (`94%` → `94`) |
 | Rating count | `#moly_rating_count` | how many people rated it, from the "62 csillagozás" link |
-| Statistics URL | `#moly_stats_raw` | the book's `/statisztika` page, e.g. `https://moly.hu/konyvek/dennis-e-taylor-mi-bob/statisztika` |
+| Statistics URL | `#moly_stats_raw` | the book's `/statisztika` page, e.g. `https://moly.hu/konyvek/dennis-e-taylor-mi-bob/statisztika`, for a book that has been rated |
 
 The rating is kept as the percentage rather than as calibre's 0-5 stars, which
 cannot tell 90% from 94%. The metadata source plugin still fills calibre's own
 rating field with the rounded 0-5 value; these columns are separate from it.
 
 The statistics URL costs no extra page open: the book page links to it from
-the "csillagozás" anchor, and a book too new to have that anchor still has the
-page, whose address follows from the book's id. In a short text column calibre
-renders it as a clickable link in *Book details*.
+the "csillagozás" anchor, and where a rated book does not render that anchor
+the address follows from the book's id. A book nobody has rated has no
+statistics page at all - it only exists once there is a rating to break down -
+so nothing is written for it rather than a guessed dead link. In a short text
+column calibre renders the URL as a clickable link in *Book details*.
 
 Set the columns in *Preferences → Plugins → Moly.hu Translator*. Any column
 type works: the value is shaped to fit whatever is there, because calibre
@@ -65,6 +67,20 @@ by a matching ISBN or a matching title. `search()` returns an unordered set of
 hits - a title search answers with the author's whole back catalogue - so
 taking one on trust would file another book's data. Books that cannot be
 confirmed are reported as not found instead.
+
+### Subtitles
+
+moly.hu often files a book under the first part of its title and shows the rest
+as a subtitle of its own: *A pénz istenei: A Wall Street összeesküvése Amerika
+leigázására* is held there as **A pénz istenei**. A search for the whole title
+finds nothing, so `generate_search_terms()` also tries the part before each
+colon or dash - after the whole title, so the more specific search always runs
+first - and the title check accepts a page whose title is the library title cut
+short at a separator, or the other way round. Only a full title is compared
+with a shortened one; two shortened titles are not, or *Aliens: Föld ostroma*
+would match *Aliens: A végső háború*. The separator has to carry a space (a
+colon before one, a dash on both sides), which keeps *Aliens-gyűjtemény* and
+*20:00* whole.
 
 Each run writes a log in the style of the metadata download log - the page it
 matched, the search terms it tried, and the title, author, publisher,
