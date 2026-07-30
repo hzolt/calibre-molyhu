@@ -8,6 +8,7 @@ from moly_hu.moly_hu import (
     book_page_urls_from_seach_page,
     generate_search_terms,
     parse_page,
+    title_variants,
 )
 
 test_inputs_path = Path(__file__).parent / "inputs"
@@ -185,16 +186,34 @@ def test_statistics_url_comes_from_the_page():
     )
 
 
-def test_statistics_url_falls_back_to_the_id():
-    # A book nobody has rated yet renders no "csillagozás" link at all, but
-    # its statistics page exists and its address follows from the id.
-    html = '<div id="content"><h1>Egy könyv</h1></div>'
+def test_statistics_url_falls_back_to_the_id_for_a_rated_book():
+    # A page that states a rating but renders no "csillagozás" link still has
+    # a statistics page, and its address follows from the id.
+    html = (
+        '<html><head><script type="application/ld+json">\n'
+        '{"@type": "Book", "aggregateRating": {"ratingValue": "90%",\n'
+        '                                      "ratingCount": "5"}}\n'
+        "</script></head><body>"
+        '<div id="content"><h1>Egy könyv</h1></div></body></html>'
+    )
     book = Book(fromstring(html), moly_id="egy-szerzo-egy-konyv")
 
     assert (
         book.statistics_url()
         == "https://moly.hu/konyvek/egy-szerzo-egy-konyv/statisztika"
     )
+
+
+def test_statistics_url_is_none_for_an_unrated_book():
+    # The statistics page only exists once there is something to break down:
+    # with neither a rating value nor a rating count on the page, there is no
+    # URL to report, and guessing one from the id would file a dead link.
+    html = '<div id="content"><h1>Egy könyv</h1></div>'
+    book = Book(fromstring(html), moly_id="egy-szerzo-egy-konyv")
+
+    assert book.rating_percent() is None
+    assert book.rating_count() is None
+    assert book.statistics_url() is None
 
 
 def test_rating_is_read_from_the_embedded_json():
@@ -437,6 +456,102 @@ def test_search_order_if_everything_available():
     ]
     result = generate_search_terms(title, authors, identifiers)
     assert result == expected
+
+
+def test_title_variants_cuts_at_the_subtitle():
+    # moly.hu holds this book as "A pénz istenei", with the rest shown as a
+    # subtitle, so the whole string finds nothing.
+    assert title_variants(
+        "A pénz istenei: A Wall Street összeesküvése Amerika leigázására"
+    ) == [
+        "A pénz istenei: A Wall Street összeesküvése Amerika leigázására",
+        "A pénz istenei",
+    ]
+
+
+def test_title_variants_cuts_at_a_dash():
+    assert title_variants("Mégis egymásnak teremtve? - So Not Meant To Be") == [
+        "Mégis egymásnak teremtve? - So Not Meant To Be",
+        "Mégis egymásnak teremtve?",
+    ]
+    assert title_variants("Sherlock Holmes – A négyek jele") == [
+        "Sherlock Holmes – A négyek jele",
+        "Sherlock Holmes",
+    ]
+
+
+def test_title_variants_longest_first_with_several_separators():
+    assert title_variants("Csillagok háborúja - Klónok támadása: A regény") == [
+        "Csillagok háborúja - Klónok támadása: A regény",
+        "Csillagok háborúja - Klónok támadása",
+        "Csillagok háborúja",
+    ]
+
+
+def test_title_variants_keeps_a_title_without_a_separator_whole():
+    # The space around the separator is what tells a subtitle from a hyphenated
+    # word or a time, so none of these may be cut short.
+    assert title_variants("A teljes Aliens-gyűjtemény 2.") == [
+        "A teljes Aliens-gyűjtemény 2."
+    ]
+    assert title_variants("Randevú 20:00-kor") == ["Randevú 20:00-kor"]
+    assert title_variants("Az érzőszívű mágus") == ["Az érzőszívű mágus"]
+
+
+def test_title_variants_of_no_title():
+    assert title_variants(None) == []
+    assert title_variants("") == []
+    assert title_variants("   ") == []
+
+
+def test_search_terms_try_the_title_without_its_subtitle():
+    # The whole title is searched for first, with and without the author, and
+    # only then the part before the colon - a search for less of the title can
+    # answer with another book, so it has to come second.
+    result = generate_search_terms(
+        "A pénz istenei: A Wall Street összeesküvése Amerika leigázására",
+        ["F. William Engdahl"],
+        {},
+    )
+
+    assert result == [
+        "F. William Engdahl A pénz istenei: A Wall Street összeesküvése Amerika leigázására",
+        "A pénz istenei: A Wall Street összeesküvése Amerika leigázására",
+        "F. William Engdahl A pénz istenei",
+        "A pénz istenei",
+    ]
+
+
+def test_search_terms_normalise_the_title_after_splitting_it():
+    # Calibre's own tokenizer replaces the colon with a space, so normalising
+    # the title before the split would leave nothing to split on. Here the
+    # callback merely upper-cases, which shows the order the two run in.
+    result = generate_search_terms(
+        "A pénz istenei: A Wall Street összeesküvése",
+        ["F. William Engdahl"],
+        {},
+        normalise_title=lambda text: text.replace(":", "").upper(),
+    )
+
+    assert result == [
+        "F. William Engdahl A PÉNZ ISTENEI A WALL STREET ÖSSZEESKÜVÉSE",
+        "A PÉNZ ISTENEI A WALL STREET ÖSSZEESKÜVÉSE",
+        "F. William Engdahl A PÉNZ ISTENEI",
+        "A PÉNZ ISTENEI",
+    ]
+
+
+def test_search_terms_skip_a_title_form_the_normaliser_empties():
+    # Calibre's tokenizer drops leading articles, so a title form made of
+    # nothing but one comes back empty, and an empty term is no search.
+    result = generate_search_terms(
+        "A: Az érzőszívű mágus",
+        ["Feist"],
+        {},
+        normalise_title=lambda text: "" if text == "A" else text,
+    )
+
+    assert result == ["Feist A: Az érzőszívű mágus", "A: Az érzőszívű mágus"]
 
 
 def test_search_multiple_author():

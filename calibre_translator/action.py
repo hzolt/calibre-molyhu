@@ -162,6 +162,19 @@ def title_tokens(text):
     return {word for word in re.split(r'\W+', fold(text), flags=re.UNICODE) if word}
 
 
+def title_forms(text):
+    """The word sets a title may legitimately be recognised by, the whole
+    title first, then the part before each colon or dash.
+
+    moly.hu commonly files a book under that first part alone and shows the
+    rest as a subtitle of its own, so the library and the page do not
+    necessarily spell the title out to the same length.
+    """
+    return [tokens for tokens in
+            (title_tokens(variant) for variant in moly_hu.title_variants(text))
+            if tokens]
+
+
 def is_match(book, info):
     """Is this moly.hu page really the book in the library?
 
@@ -176,12 +189,22 @@ def is_match(book, info):
     "So Not Meant To Be – Mégis egymásnak teremtve?". Requiring the sets to be
     equal keeps this strict - one title being merely contained in the other is
     not enough, or "Aliens" would match "A teljes Aliens-gyűjtemény 2."
+
+    One side may stop at the subtitle, though, so its whole title is compared
+    against the shortened forms of the other as well: the page's "A pénz
+    istenei" is the library's "A pénz istenei: A Wall Street összeesküvése
+    Amerika leigázására". Only a full title is ever matched against a
+    shortened one - two shortened titles are not compared with each other, or
+    "Aliens: Föld ostroma" would match "Aliens: A végső háború".
     """
     isbn = (info.get('identifiers') or {}).get('isbn')
     if isbn and book.isbn() and only_digits(isbn) == only_digits(book.isbn()):
         return True
-    page = title_tokens(book.title())
-    return bool(page) and page == title_tokens(info.get('title'))
+    page_forms = title_forms(book.title())
+    library_forms = title_forms(info.get('title'))
+    if not page_forms or not library_forms:
+        return False
+    return page_forms[0] in library_forms or library_forms[0] in page_forms
 
 
 def find_book(info, log, abort=None):

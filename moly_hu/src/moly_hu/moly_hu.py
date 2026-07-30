@@ -78,16 +78,61 @@ def parse_count(text):
     return None
 
 
-def generate_search_terms(title, authors, identifiers):
+# Where a title can be cut short. moly.hu files a book under the part before
+# the separator and renders the rest as a subtitle of its own, so the library's
+# "A pénz istenei: A Wall Street összeesküvése Amerika leigázására" is simply
+# "A pénz istenei" there and the whole string finds nothing.
+#
+# The surrounding space is part of the pattern on purpose: a colon has to be
+# followed by one, which keeps a time like "20:00" together, and a dash needs
+# one on both sides, which keeps "Aliens-gyűjtemény" and "e-mail" whole. The en
+# and em dash are matched as well, both common in Hungarian titles.
+SUBTITLE_SEPARATOR = re.compile(r":\s|\s[-–—]\s")
+
+
+def title_variants(title):
+    """The title and the shorter forms of it worth searching for.
+
+    The full title comes first, then the part before each separator, longest
+    first, so that the most specific search is always tried before a broader
+    one. A title without a separator yields itself alone.
+    """
+    if not title or not title.strip():
+        return []
+    variants = [title.strip()]
+    # Reversed: the last separator gives the longest prefix.
+    for match in reversed(list(SUBTITLE_SEPARATOR.finditer(title))):
+        prefix = title[: match.start()].strip()
+        if prefix:
+            variants.append(prefix)
+    return list(dict.fromkeys(variants))
+
+
+def generate_search_terms(title, authors, identifiers, normalise_title=None):
+    """The moly.hu searches to run for a book, in the order to run them.
+
+    An ISBN first, being an exact match, then author and title together
+    followed by the title on its own - for each form of the title in turn, so
+    that a search for the whole title always precedes one for a part of it.
+
+    ``normalise_title`` is applied to each title form when given: calibre's
+    metadata source hands over its own tokenizer, which drops leading articles
+    and punctuation. It runs after the title is split rather than before,
+    because it strips the very colon the split needs.
+    """
     search_terms = list()
     isbn = identifiers.get("isbn")
     if isbn:
         search_terms.append(isbn)
-    if authors and title:
-        for author in authors:
-            search_terms.append(f"{author} {title}")
-    if title:
-        search_terms.append(title)
+    for variant in title_variants(title):
+        if normalise_title is not None:
+            variant = (normalise_title(variant) or "").strip()
+            if not variant:
+                continue
+        if authors:
+            for author in authors:
+                search_terms.append(f"{author} {variant}")
+        search_terms.append(variant)
     return list(dict.fromkeys(search_terms))
 
 
@@ -442,14 +487,18 @@ class Book:
         https://moly.hu/konyvek/dennis-e-taylor-mi-bob/statisztika
 
         The page's own link is preferred so that a change of path on moly.hu
-        follows automatically. An unrated book carries no such link, so the
-        URL is built from the id instead - the page exists either way.
+        follows automatically. Where the link is missing the URL is built from
+        the id, but only for a book that has been rated: the statistics page
+        exists only once there is something to break down, so a book with
+        neither a rating nor a rating count has no URL to give.
         """
         link = self._statistic_link()
         href = link.get("href") if link is not None else None
         if href:
             return href if href.startswith("http") else DOMAIN + href
-        if self._moly_id:
+        if self._moly_id and (
+            self.rating_count() is not None or self.rating_percent() is not None
+        ):
             return statistics_url_for_id(self._moly_id)
         return None
 
