@@ -25,7 +25,8 @@ def book_to_metadata(book) -> Metadata:
         metadata.pubdate = datetime.datetime(
             pubdate.year, pubdate.month, pubdate.day, tzinfo=utc_tz
         )
-    metadata.rating = book.rating()
+    if rating := book.rating():
+        metadata.rating = rating
     if book.series():
         metadata.series = book.series()[0]
         metadata.series_index = book.series()[1]

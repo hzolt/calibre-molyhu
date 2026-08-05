@@ -447,6 +447,14 @@ class Book:
         it - 90% and 94% are both 5 stars. This keeps the number as it stands
         on the page, for a column that can hold it.
         """
+        # A page that states nobody has rated the book has no score to give,
+        # whatever else it renders: a "0%" there is the absence of ratings, not
+        # a book everyone disliked. The stated count is what this turns on
+        # rather than rating_count(), which reads that same zero as absent, so
+        # that a book whose page shows a percentage but no count link - the
+        # count is genuinely unknown there - still reports its score.
+        if self._stated_rating_count() == 0:
+            return None
         stated = (self._aggregate_rating() or {}).get("ratingValue")
         # Only taken when it is written as a percentage. schema.org means
         # ratingValue to be a score out of bestRating, so a day when moly.hu
@@ -472,8 +480,8 @@ class Book:
         )
         return nodes[0] if nodes else None
 
-    def rating_count(self):
-        """How many people rated the book: the "62 csillagozás" figure."""
+    def _stated_rating_count(self):
+        """The rating count exactly as the page puts it, a zero included."""
         stated = (self._aggregate_rating() or {}).get("ratingCount")
         if stated is not None:
             count = parse_count(stated)
@@ -481,6 +489,16 @@ class Book:
                 return count
         link = self._statistic_link()
         return parse_count(link.text) if link is not None and link.text else None
+
+    def rating_count(self):
+        """How many people rated the book: the "62 csillagozás" figure.
+
+        A book nobody has rated yet is reported as a zero rather than left out
+        - the schema.org block carries "ratingCount": "0" - and a zero is not a
+        count anyone wants recorded. It reads as absent, so that writing it to
+        a library leaves the column as it was instead of filing a 0 there.
+        """
+        return self._stated_rating_count() or None
 
     def statistics_url(self):
         """Where moly.hu breaks the ratings down, e.g.
@@ -492,6 +510,11 @@ class Book:
         exists only once there is something to break down, so a book with
         neither a rating nor a rating count has no URL to give.
         """
+        # An unrated book can still carry the link, and it points at a page
+        # with nothing on it. Where the page states the count as zero that is
+        # not a URL worth reporting, however it was arrived at.
+        if self._stated_rating_count() == 0:
+            return None
         link = self._statistic_link()
         href = link.get("href") if link is not None else None
         if href:
