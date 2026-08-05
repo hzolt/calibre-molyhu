@@ -285,6 +285,58 @@ def test_rating_count_strips_grouped_thousands():
     assert book.rating_count() == 1234
 
 
+def test_a_stated_rating_count_of_zero_reads_as_absent():
+    # A book nobody has rated yet is not left out of the schema.org block, it
+    # is stated as a zero. Taken from the page of "Magyarics Tamás - Mártonffy
+    # Balázs: Ütközőpályák", which filed a 0 into the rating count column and
+    # linked a statistics page with nothing on it until this was read.
+    html = (
+        '<html><head><script type="application/ld+json">\n'
+        '{"@context": "https://schema.org/", "@type": "Book",\n'
+        ' "name": "Ütközőpályák",\n'
+        ' "aggregateRating": {"@type": "AggregateRating", "ratingCount": "0"}}\n'
+        "</script></head><body>"
+        '<div id="content"><h1>Ütközőpályák</h1></div></body></html>'
+    )
+    book = Book(fromstring(html), moly_id="egy-szerzo-utkozopalyak")
+
+    assert book.rating_count() is None
+    assert book.rating_percent() is None
+    assert book.rating() is None
+    assert book.statistics_url() is None
+
+
+def test_a_zero_csillagozas_link_reads_as_absent():
+    # The link can be rendered for an unrated book too. Its href is no reason
+    # to report a statistics page that has nothing to break down.
+    html = (
+        '<div id="content"><span class="stat">'
+        '<a class="statistic_link modal" href="/konyvek/x/statisztika">'
+        "0 csillagozás</a></span></div>"
+    )
+    book = Book(fromstring(html))
+
+    assert book.rating_count() is None
+    assert book.statistics_url() is None
+
+
+def test_a_zero_percent_rating_is_kept_when_the_book_has_ratings():
+    # 0% off 62 ratings is a score, not the absence of one, and reading it as
+    # absent would lose a book its rating.
+    html = (
+        '<html><head><script type="application/ld+json">\n'
+        '{"@type": "Book", "aggregateRating": {"ratingValue": "0%",\n'
+        '                                      "ratingCount": "62"}}\n'
+        "</script></head><body>"
+        '<div id="content"><h1>Egy könyv</h1></div></body></html>'
+    )
+    book = Book(fromstring(html))
+
+    assert book.rating_percent() == 0.0
+    assert book.rating_count() == 62
+    assert book.rating() == 0
+
+
 def test_rating_is_none_without_the_stat_block():
     html = '<div id="content"><h1>Egy könyv</h1></div>'
     book = Book(fromstring(html))
