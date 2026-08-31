@@ -151,16 +151,317 @@ def test_parse_page_decodes_utf8_without_a_charset_declaration():
 def test_edition_fields_come_from_a_single_edition():
     # A book page lists every edition, each with its own publisher, year, ISBN
     # and translator. All the edition-derived getters must describe the same
-    # (first) edition, otherwise a book with an old and a re-translated
-    # edition would end up with a year from one and a translator from another.
-    # This page also embeds a copy of an edition inside a review, and reuses
-    # the "items" class for the review and citation blocks.
+    # edition, otherwise a book with an old and a re-translated edition would
+    # end up with a year from one and a translator from another.
+    html = (
+        '<div id="content"><div class="items">'
+        '<div class="edition edition_1">'
+        '<div><a href="/kiadok/szukits">Szukits</a>, Szeged, '
+        "<abbr title='Megjelenés időpontja: 2019. március 4.' "
+        "class='tooltip'>2019</abbr></div>"
+        "<div>404 oldal · <strong>ISBN</strong>: 9789634978084</div></div>"
+        '<div class="edition edition_2">'
+        '<div><a href="/kiadok/gabo">Gabo</a>, Budapest, '
+        "<abbr title='Megjelenés időpontja: 2024. május 6.' "
+        "class='tooltip'>2024</abbr></div>"
+        "<div>412 oldal · <strong>ISBN</strong>: 9789635661234 · "
+        '<strong>Fordította</strong>: <a href="/alkotok/nagy-imre">'
+        "Nagy Imre</a></div></div>"
+        "</div></div>"
+    )
+    book = Book(fromstring(html))
+
+    assert book.is_ebook() is False
+    assert book.publisher() == "Szukits"
+    assert book.publication_date() == datetime.date(2019, 3, 4)
+    assert book.isbn() == "9789634978084"
+    # The second edition's translator must not fill in for the first one's
+    # missing "Fordította" label: filling in is for the ebook edition, whose
+    # gaps the same book's printed edition can answer for.
+    assert book.translator() is None
+    assert book.isbns() == ["9789634978084", "9789635661234"]
+
+
+def test_the_ebook_edition_is_preferred():
+    # moly.hu marks the ebook edition with a reader icon labelled "Ekönyv" and
+    # tags it "ekönyv". That edition is the one a calibre library holds, so its
+    # ISBN, date and translator are the ones to report - even though the
+    # printed edition is listed first. This page also embeds a copy of the
+    # printed edition inside a review, and reuses the "items" class for the
+    # review and citation blocks.
     book = read_book("book_page_dennis_e_taylor_mi_bob.htm")
 
+    assert book.is_ebook() is True
     assert book.publisher() == "Metropolis Media"
+    # The ebook line states a bare 2017; the printed edition of the same year
+    # carries the day in its tooltip, and that is the same book's date.
     assert book.publication_date() == datetime.date(2017, 6, 12)
-    assert book.isbn() == "9786155628221"
+    assert book.isbn() == "9786155628269"
     assert book.translator() == ["Oszlánszky Zsolt"]
+    # The printed edition is still reported, so that a library holding it can
+    # confirm the page is about the same book.
+    assert book.isbns() == ["9786155628221", "9786155628269"]
+
+
+def test_the_ebook_edition_is_recognised_by_its_data_title():
+    # Current pages spell the label as a data-title attribute on the reader
+    # icon, and only tag the edition below the ISBN line.
+    html = (
+        '<div id="content"><div class="items">'
+        '<div id="edition_773308" class="edition edition_773308">'
+        '<div><a href="/kiadok/metropolis-media">Metropolis Media</a>, '
+        "Budapest, <abbr title='Megjelenés időpontja: 2023. február 18.' "
+        "class='tooltip'>2023</abbr></div>"
+        "<div>320 oldal · puhatáblás · <strong>ISBN</strong>: 9789635511228 · "
+        '<strong>Fordította</strong>: <a href="/alkotok/tamas-denes">'
+        "Tamás Dénes</a></div></div>"
+        '<div id="edition_840757" class="edition edition_840757">'
+        '<div><a href="/kiadok/metropolis-media">Metropolis Media</a>, '
+        'Budapest, 2023 <img class="tooltip" alt="" height="16" width="16" '
+        'src="https://assets.moly.hu/assets/e-book-reader-black.png" '
+        'data-title="Ekönyv" title="Ekönyv"/></div>'
+        "<div>352 oldal · <strong>ISBN</strong>: 9789635511235 · "
+        '<strong>Fordította</strong>: <a href="/alkotok/tamas-denes">'
+        "Tamás Dénes</a></div>"
+        '<a class="tag" href="/cimkek/ekonyv">ekönyv</a></div>'
+        "</div></div>"
+    )
+    book = Book(fromstring(html))
+
+    assert book.is_ebook() is True
+    assert book.isbn() == "9789635511235"
+    assert book.publication_date() == datetime.date(2023, 2, 18)
+    assert book.publisher() == "Metropolis Media"
+    assert book.translator() == ["Tamás Dénes"]
+
+
+def test_the_ebook_edition_is_recognised_by_its_tag_alone():
+    # Older pages render the reader icon without any label, leaving the
+    # "ekönyv" tag as the only marking.
+    html = (
+        '<div id="content"><div class="items">'
+        '<div class="edition edition_1">'
+        '<div><a href="/kiadok/szukits">Szukits</a>, Szeged, 2019</div>'
+        "<div>404 oldal · <strong>ISBN</strong>: 9789634978084</div></div>"
+        '<div class="edition edition_2">'
+        '<div><a href="/kiadok/szukits">Szukits</a>, Szeged, 2020</div>'
+        "<div>410 oldal · <strong>ISBN</strong>: 9789635661234</div>"
+        '<a class="tag" href="/cimkek/ekonyv">ekönyv</a></div>'
+        "</div></div>"
+    )
+    book = Book(fromstring(html))
+
+    assert book.is_ebook() is True
+    assert book.isbn() == "9789635661234"
+    # Both lines state a bare year, and 2019 is not a more precise reading of
+    # 2020, so the ebook's own year stands.
+    assert book.publication_date() == datetime.date(2020, 1, 1)
+
+
+def ebook_page(ebook_line, ebook_data, printed_line, printed_data,
+               printed_publisher="metropolis-media"):
+    """A book page with one printed and one ebook edition, in that order."""
+    return (
+        '<div id="content"><div class="items">'
+        '<div class="edition edition_printed"><div>'
+        '<a href="/kiadok/%s">Nyomtatott Kiadó</a>, Budapest, %s</div>'
+        "<div>%s</div></div>"
+        '<div class="edition edition_ebook"><div>'
+        '<a href="/kiadok/metropolis-media">Metropolis Media</a>, '
+        'Budapest, %s <img data-title="Ekönyv" title="Ekönyv" '
+        'src="https://assets.moly.hu/assets/e-book-reader-black.png"/></div>'
+        "<div>%s</div>"
+        '<a class="tag" href="/cimkek/ekonyv">ekönyv</a></div>'
+        "</div></div>"
+        % (printed_publisher, printed_line, printed_data, ebook_line, ebook_data)
+    )
+
+
+def test_a_bare_ebook_year_is_sharpened_by_the_printed_edition():
+    # The ebook line rarely carries the "Megjelenés időpontja" tooltip, and a
+    # bare year is a coarser reading of the same date the printed edition of
+    # that year states in full.
+    book = Book(fromstring(ebook_page(
+        ebook_line="2023",
+        ebook_data="<strong>ISBN</strong>: 9789635511235",
+        printed_line=(
+            "<abbr title=\'Megjelenés időpontja: 2023. február 18.\' "
+            "class=\'tooltip\'>2023</abbr>"
+        ),
+        printed_data="320 oldal · <strong>ISBN</strong>: 9789635511228",
+    )))
+
+    assert book.publication_date() == datetime.date(2023, 2, 18)
+    assert book.isbn() == "9789635511235"
+
+
+def test_a_printed_date_of_another_year_does_not_sharpen_the_ebook():
+    # A book reissued as an ebook years after the hardback is a different
+    # date, not a more precise reading of the same one.
+    book = Book(fromstring(ebook_page(
+        ebook_line="2023",
+        ebook_data="<strong>ISBN</strong>: 9789635511235",
+        printed_line=(
+            "<abbr title=\'Megjelenés időpontja: 2015. február 18.\' "
+            "class=\'tooltip\'>2015</abbr>"
+        ),
+        printed_data="320 oldal · <strong>ISBN</strong>: 9789635511228",
+    )))
+
+    assert book.publication_date() == datetime.date(2023, 1, 1)
+
+
+def test_a_printed_date_of_another_month_does_not_sharpen_the_ebook():
+    # The ebook states the month itself here, so only a day within that month
+    # is a more precise reading of it.
+    book = Book(fromstring(ebook_page(
+        ebook_line=(
+            "<abbr title=\'Megjelenés időpontja: 2023. február\' "
+            "class=\'tooltip\'>2023</abbr>"
+        ),
+        ebook_data="<strong>ISBN</strong>: 9789635511235",
+        printed_line=(
+            "<abbr title=\'Megjelenés időpontja: 2023. március 18.\' "
+            "class=\'tooltip\'>2023</abbr>"
+        ),
+        printed_data="320 oldal · <strong>ISBN</strong>: 9789635511228",
+    )))
+
+    assert book.publication_date() == datetime.date(2023, 2, 1)
+
+
+def test_the_ebook_takes_the_day_within_the_month_it_states():
+    book = Book(fromstring(ebook_page(
+        ebook_line=(
+            "<abbr title=\'Megjelenés időpontja: 2023. február\' "
+            "class=\'tooltip\'>2023</abbr>"
+        ),
+        ebook_data="<strong>ISBN</strong>: 9789635511235",
+        printed_line=(
+            "<abbr title=\'Megjelenés időpontja: 2023. február 18.\' "
+            "class=\'tooltip\'>2023</abbr>"
+        ),
+        printed_data="320 oldal · <strong>ISBN</strong>: 9789635511228",
+    )))
+
+    assert book.publication_date() == datetime.date(2023, 2, 18)
+
+
+def test_the_printed_edition_fills_in_what_the_ebook_line_omits():
+    # Hungarian ebook editions are thinly documented: this one states neither
+    # a translator nor an ISBN of its own.
+    book = Book(fromstring(ebook_page(
+        ebook_line="2023",
+        ebook_data="352 oldal",
+        printed_line="2023",
+        printed_data=(
+            "320 oldal · <strong>ISBN</strong>: 9789635511228 · "
+            '<strong>Fordította</strong>: <a href="/alkotok/tamas-denes">'
+            "Tamás Dénes</a>"
+        ),
+    )))
+
+    assert book.is_ebook() is True
+    assert book.translator() == ["Tamás Dénes"]
+    # No ISBN of its own, so the printed edition's is reported rather than
+    # nothing at all.
+    assert book.isbn() == "9789635511228"
+    assert book.isbns() == ["9789635511228"]
+
+
+def test_the_ebook_publisher_picks_which_edition_fills_in():
+    # Two printed editions, and only one of them is the ebook's own publisher.
+    # That is the release the ebook belongs to, so its date is the one taken.
+    html = (
+        '<div id="content"><div class="items">'
+        '<div class="edition edition_1"><div>'
+        '<a href="/kiadok/gabo">Gabo</a>, Budapest, '
+        "<abbr title=\'Megjelenés időpontja: 2023. január 5.\' "
+        "class=\'tooltip\'>2023</abbr></div>"
+        "<div>300 oldal · <strong>ISBN</strong>: 9789631111111</div></div>"
+        '<div class="edition edition_2"><div>'
+        '<a href="/kiadok/metropolis-media">Metropolis Media</a>, Budapest, '
+        "<abbr title=\'Megjelenés időpontja: 2023. február 18.\' "
+        "class=\'tooltip\'>2023</abbr></div>"
+        "<div>320 oldal · <strong>ISBN</strong>: 9789635511228</div></div>"
+        '<div class="edition edition_3"><div>'
+        '<a href="/kiadok/metropolis-media">Metropolis Media</a>, '
+        'Budapest, 2023 <img data-title="Ekönyv" title="Ekönyv" '
+        'src="https://assets.moly.hu/assets/e-book-reader-black.png"/></div>'
+        "<div>352 oldal</div>"
+        '<a class="tag" href="/cimkek/ekonyv">ekönyv</a></div>'
+        "</div></div>"
+    )
+    book = Book(fromstring(html))
+
+    assert book.publisher() == "Metropolis Media"
+    assert book.publication_date() == datetime.date(2023, 2, 18)
+    assert book.isbn() == "9789635511228"
+
+
+def test_the_ebook_takes_a_date_from_the_printed_edition_when_it_has_none():
+    # An ebook line with no year at all has nothing to be sharpened, so the
+    # printed edition simply supplies the date.
+    book = Book(fromstring(ebook_page(
+        ebook_line="",
+        ebook_data="<strong>ISBN</strong>: 9789635511235",
+        printed_line=(
+            "<abbr title=\'Megjelenés időpontja: 2023. február 18.\' "
+            "class=\'tooltip\'>2023</abbr>"
+        ),
+        printed_data="320 oldal · <strong>ISBN</strong>: 9789635511228",
+    )))
+
+    assert book.publication_date() == datetime.date(2023, 2, 18)
+    assert book.isbn() == "9789635511235"
+
+
+def test_isbn_is_not_read_from_a_cover_id():
+    # The edition line carries a cover path whose cache-busting stamp is ten
+    # digits long. It is an attribute rather than text, and the ISBN is taken
+    # from behind its own label, so neither route can turn it into an ISBN.
+    html = (
+        '<div id="content"><div class="items">'
+        '<div class="edition edition_1"><div>'
+        '<img data-cover="/system/covers/normal/covers_787638.jpg?1674758201" '
+        'class="screenshot" src="https://assets.moly.hu/assets/book.png"/>'
+        '<a href="/kiadok/szukits">Szukits</a>, Szeged, 2019</div>'
+        "<div>404 oldal · <strong>ISBN</strong>: 9789634978084</div>"
+        "</div></div></div>"
+    )
+    book = Book(fromstring(html))
+
+    assert book.isbn() == "9789634978084"
+
+
+def test_publisher_is_found_however_the_edition_is_nested():
+    # The "Megnyitás" anchor at the head of an edition line is not always
+    # closed before the lines that follow it, which leaves the publisher
+    # nested inside it. Naming the link by its href finds it either way.
+    html = (
+        '<div id="content"><div class="items">'
+        '<div id="edition_840757" class="edition edition_840757">'
+        '<a rel="modal" class="button_icon right tooltip" title="Megnyitás" '
+        'href="/kiadasok/840757">'
+        '<div><a href="/kiadok/metropolis-media">Metropolis Media</a>, '
+        'Budapest, 2023 <img class="tooltip" alt="" '
+        'src="https://assets.moly.hu/assets/e-book-reader-black.png" '
+        'data-title="Ekönyv" title="Ekönyv"/></div>'
+        "<div>352 oldal · <strong>ISBN</strong>: 9789635511235</div>"
+        "</div></div></div>"
+    )
+    book = Book(fromstring(html))
+
+    assert book.is_ebook() is True
+    assert book.publisher() == "Metropolis Media"
+    assert book.isbn() == "9789635511235"
+
+
+def test_isbns_is_none_without_an_edition():
+    book = Book(fromstring('<div id="content"><h1>Egy könyv</h1></div>'))
+
+    assert book.isbns() is None
+    assert book.is_ebook() is False
 
 
 def test_rating_is_read_from_the_book_and_not_from_a_review():

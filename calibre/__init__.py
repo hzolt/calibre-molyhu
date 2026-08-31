@@ -118,7 +118,12 @@ class Molyhu(Source):
                 continue
             if covers := book.cover_urls():
                 self.cache_identifier_to_cover_url(book.moly_id(), covers[0])
-            self.cache_isbn_to_identifier(book.isbn(), book.moly_id())
+            # Every edition's ISBN is cached, not just the one the metadata
+            # is read from: the record carries the ebook edition's ISBN where
+            # the page has one, and a search made with the paperback's ISBN
+            # still has to find its way back to this book.
+            for isbn in (book.isbns() or []):
+                self.cache_isbn_to_identifier(isbn, book.moly_id())
 
             metadata = book_to_metadata(book)
             self.clean_downloaded_metadata(metadata)

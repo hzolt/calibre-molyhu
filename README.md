@@ -19,7 +19,7 @@ from calibre. Each front end copies it into its own package at build time:
 | Artifact | Built by | What it does |
 |---|---|---|
 | **Moly.hu Reloaded** | `scripts/create_calibre_plugin_zip.sh` | calibre metadata source: title, authors, series, publisher, publication date, ISBN, tags, rating, comments, covers |
-| **Moly.hu Translator** | `scripts/create_calibre_translator_plugin_zip.sh` | calibre toolbar button that writes the translator, rating, rating count and statistics page URL into custom columns |
+| **Moly.hu Translator** | `scripts/create_calibre_translator_plugin_zip.sh` | calibre toolbar button that writes the translator, rating, rating count, statistics page URL and ebook marker into custom columns |
 | **calibre-web provider** | `scripts/create_calibreweb_plugin_zip.sh` | the same metadata for calibre-web |
 
 The two calibre plugins are separate because calibre loads exactly one plugin
@@ -28,10 +28,58 @@ because they need different things from calibre: a metadata source runs in a
 worker with no library handle, while writing a custom column needs the
 library. Install both if you want the translator.
 
+### Editions
+
+A moly.hu book page lists every edition it knows of, each with its own
+publisher, publication date, ISBN, page count and translator.
+
+Where the page has an ebook edition, that is the edition the metadata
+describes: it is the one a calibre library actually holds, and it is a release
+of its own, with its own ISBN and often its own publication date. moly.hu
+marks it on the edition line with a reader icon labelled *Ekönyv* and tags the
+edition `ekönyv`:
+
+```html
+<div id="edition_840757" class="edition edition_840757">
+  <div><a href="/kiadok/metropolis-media">Metropolis Media</a>, Budapest, 2023
+    <img src=".../e-book-reader-black.png" data-title="Ekönyv" title="Ekönyv"/></div>
+  <div>352 oldal · <strong>ISBN</strong>: 9789635511235 · ...</div>
+  <a class="tag" href="/cimkek/ekonyv">ekönyv</a>
+</div>
+```
+
+All three markings are matched (`data-title`, the older `title` spelling and
+the tag link), because moly.hu does not render them consistently.
+
+Hungarian ebook editions are thinly documented, though. The line above states
+a bare `2023` where the printed edition of the same book carries
+`Megjelenés időpontja: 2023. február 18.` in a tooltip, and an ebook line can
+omit the publisher, the translator or even the ISBN. So the printed editions
+fill in for it, field by field:
+
+| | |
+|---|---|
+| **Publisher, translator** | taken from the ebook line; where it does not state them, from a printed edition |
+| **Publication date** | the ebook's own date, sharpened by a printed edition's more precise one - but only where the two agree on every part the ebook states, so a 2017 ebook can never be given a 2015 hardback's day, and *2023. február* is never sharpened by a March date |
+| **ISBN** | the ebook's own number; where its line states none, the printed edition's, because a record with the paperback's ISBN still names the book where a record with none names nothing |
+
+The edition of the ebook's own publisher fills in first, being the most likely
+to describe the same release; the rest follow in page order.
+
+Filling in is for the ebook edition alone. On a page whose editions are all
+printed, the first one is read on its own, so that a book with an old and a
+re-translated edition cannot end up with the year of one and the translator of
+another.
+
+`Book.isbns()` lists the ISBN of every edition on the page whatever was read.
+A library holding the paperback still confirms as a match against a page read
+off the ebook edition, and the metadata source caches all of them, so a search
+by the paperback's ISBN still finds the book.
+
 ### Moly.hu Translator
 
 Adds a **Fetch data from moly.hu** toolbar button. Select books, press it, and
-four values off the moly.hu book page are written into custom columns with
+five values off the moly.hu book page are written into custom columns with
 `db.new_api.set_field`:
 
 | Field | Default column | What it holds |
@@ -40,6 +88,7 @@ four values off the moly.hu book page are written into custom columns with
 | Rating | `#moly_rating` | the score as moly.hu shows it, a percentage from 0 to 100 (`94%` → `94`) |
 | Rating count | `#moly_rating_count` | how many people rated it, from the "62 csillagozás" link |
 | Statistics URL | `#moly_stats_raw` | the book's `/statisztika` page, e.g. `https://moly.hu/konyvek/dennis-e-taylor-mi-bob/statisztika`, for a book that has been rated |
+| Type | `#type` | 📱 where the data was read off an ebook edition |
 
 The rating is kept as the percentage rather than as calibre's 0-5 stars, which
 cannot tell 90% from 94%. The metadata source plugin still fills calibre's own
@@ -61,6 +110,24 @@ refuses to start when none of them resolve.
 
 Each field is written on its own, so a book whose page carries a rating but no
 translator still gets its rating.
+
+### The type marker
+
+A book whose moly.hu page carries an ebook edition is marked in the type
+column, because that is the edition the data was read from (see
+[Editions](#editions) above). Unicode has no e-reader or Kindle glyph, so 📱 -
+the device most of these files are read on - stands in for one, and calibre
+renders it in the column like any other text.
+
+The mark is a setting of its own, next to the column name in *Preferences →
+Plugins → Moly.hu Translator*, so a library that would rather see 📖, 🖥 or the
+word `ekönyv` only has to type it in. Emptying it turns the mark off without
+having to unset the column.
+
+Nothing is written for a page with printed editions only: calibre knows which
+formats the library actually holds, moly.hu only knows what was published, so
+an unmarked book is one moly.hu has no ebook edition for rather than one that
+is certainly paper.
 
 A book is only written when the moly.hu page is confirmed to be the right one,
 by a matching ISBN or a matching title. `search()` returns an unordered set of

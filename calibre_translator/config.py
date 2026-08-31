@@ -1,6 +1,6 @@
 from qt.core import QLabel, QLineEdit, QVBoxLayout, QWidget
 
-from calibre_plugins.moly_hu_translator import prefs
+from calibre_plugins.moly_hu_translator import EBOOK_MARKER, prefs
 
 
 def describe_column(column):
@@ -77,6 +77,47 @@ class ColumnRow:
         prefs[self.pref_key] = self.name()
 
 
+class MarkerRow:
+    """The "what to write for an ebook" setting.
+
+    A line edit rather than a fixed emoji: Unicode has no e-reader or Kindle
+    glyph, so what stands in for one is a matter of taste. Left empty, nothing
+    is written for the type at all.
+    """
+
+    pref_key = 'ebook_marker'
+
+    def __init__(self, parent, layout, label):
+        layout.addWidget(QLabel(label))
+        self.marker = QLineEdit(parent)
+        marker = prefs[self.pref_key]
+        self.marker.setText(EBOOK_MARKER if marker is None else marker)
+        self.marker.textChanged.connect(self.refresh_status)
+        layout.addWidget(self.marker)
+
+        self.status = QLabel(parent)
+        self.status.setWordWrap(True)
+        layout.addWidget(self.status)
+
+        self.refresh_status()
+
+    def name(self):
+        return (self.marker.text() or '').strip()
+
+    def refresh_status(self):
+        marker = self.name()
+        if not marker:
+            self.status.setText(
+                _('Nothing is written for the type while this is empty.'))
+            return
+        self.status.setText(
+            _('Books read off an ebook edition are marked "%s". Any text '
+              'works, an emoji included.') % marker)
+
+    def save(self):
+        prefs[self.pref_key] = self.name()
+
+
 class ConfigWidget(QWidget):
     def __init__(self):
         QWidget.__init__(self)
@@ -92,6 +133,10 @@ class ConfigWidget(QWidget):
             ColumnRow(self, layout,
                       _('Custom column for the statistics page URL:'),
                       'statistics_url_column'),
+            ColumnRow(self, layout,
+                      _('Custom column for the type:'), 'type_column'),
+            MarkerRow(self, layout,
+                      _('Written into the type column for an ebook:')),
         ]
         layout.addStretch()
 

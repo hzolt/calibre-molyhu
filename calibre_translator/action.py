@@ -9,7 +9,7 @@ from calibre.gui2 import Dispatcher, error_dialog, info_dialog
 from calibre.gui2.actions import InterfaceAction
 from calibre.gui2.threaded_jobs import ThreadedJob
 
-from calibre_plugins.moly_hu_translator import prefs
+from calibre_plugins.moly_hu_translator import EBOOK_MARKER, prefs
 
 import calibre_plugins.moly_hu_translator.moly_hu as moly_hu
 
@@ -49,7 +49,20 @@ FIELDS = (
     ('rating', 'rating_column', _('Rating')),
     ('rating_count', 'rating_count_column', _('Rating count')),
     ('statistics_url', 'statistics_url_column', _('Statistics URL')),
+    ('type', 'type_column', _('Type')),
 )
+
+
+def ebook_marker():
+    """The mark written for an ebook, or None when it has been cleared.
+
+    Emptying the setting is a way of turning the mark off that does not
+    require unsetting the column as well.
+    """
+    marker = prefs['ebook_marker']
+    if marker is None:
+        marker = EBOOK_MARKER
+    return marker.strip() or None
 
 
 def read_fields(book):
@@ -60,12 +73,19 @@ def read_fields(book):
 
     The statistics URL costs no extra page open: the book page already links
     to it, and where it does not the address follows from the book's id.
+
+    The type marks the books whose data was read off an ebook edition, which
+    is the edition moly.hu is read from wherever the page has one. A page with
+    printed editions only leaves the field empty rather than marking the book
+    as something it may not be: calibre knows what formats the library holds,
+    moly.hu only knows what was published.
     """
     return {
         'translator': book.translator(),
         'rating': book.rating_percent(),
         'rating_count': book.rating_count(),
         'statistics_url': book.statistics_url(),
+        'type': ebook_marker() if book.is_ebook() else None,
     }
 
 
@@ -198,8 +218,15 @@ def is_match(book, info):
     "Aliens: Föld ostroma" would match "Aliens: A végső háború".
     """
     isbn = (info.get('identifiers') or {}).get('isbn')
-    if isbn and book.isbn() and only_digits(isbn) == only_digits(book.isbn()):
-        return True
+    # Every edition of the page is compared, not just the one the data is read
+    # from: the page's values come off the ebook edition where there is one,
+    # while the library may hold the paperback, and the two ISBNs differ
+    # although both name this book.
+    if isbn:
+        wanted = only_digits(isbn)
+        if any(wanted == only_digits(candidate)
+               for candidate in (book.isbns() or [])):
+            return True
     page_forms = title_forms(book.title())
     library_forms = title_forms(info.get('title'))
     if not page_forms or not library_forms:
@@ -305,8 +332,9 @@ class MolyhuTranslatorAction(InterfaceAction):
     action_spec = (
         _('Fetch data from moly.hu'),
         None,
-        _('Write the moly.hu translator, rating, rating count and statistics '
-          'page URL of the selected books into custom columns'),
+        _('Write the moly.hu translator, rating, rating count, statistics '
+          'page URL and ebook marker of the selected books into custom '
+          'columns'),
         None,
     )
     action_type = 'current'
@@ -335,7 +363,7 @@ class MolyhuTranslatorAction(InterfaceAction):
         """The configured columns that exist in this library, keyed by field.
 
         A field whose column is unset or absent is simply not written, so one
-        missing column does not cost the run the other two.
+        missing column does not cost the run the others.
         """
         metadata = db.new_api.field_metadata.custom_field_metadata()
         columns = {}
@@ -405,7 +433,7 @@ class MolyhuTranslatorAction(InterfaceAction):
                 show=True)
 
         # One set_field per column rather than per book: it is a single bulk
-        # write, and the three fields do not necessarily cover the same books.
+        # write, and the fields do not necessarily cover the same books.
         writes, done_lines = {}, []
         for book_id, values in found.items():
             if not db.new_api.has_id(book_id):

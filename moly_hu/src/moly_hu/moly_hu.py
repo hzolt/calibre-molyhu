@@ -28,30 +28,72 @@ HUNGARIAN_MONTHS = {
 }
 
 
-def parse_hungarian_date(text):
-    """Parse a moly.hu publication date into a ``datetime.date``.
+# How much of a date a page actually stated. The missing parts are filled in
+# with the first month and day, so the date alone cannot tell "2017" from
+# "2017. január 1.", and one edition's date can only be sharpened with
+# another's when it is known which parts are real.
+DAY_PRECISION = 3
+MONTH_PRECISION = 2
+YEAR_PRECISION = 1
+
+
+def parse_hungarian_date_precision(text):
+    """A moly.hu publication date as ``(date, precision)``.
 
     Handles a full date ("2025. szeptember 4."), a year and month
     ("2025. szeptember") and a bare year ("2025"). Missing parts default to
-    the first month/day. Returns ``None`` when no year can be found.
+    the first month/day, and the precision says which of them were stated.
+    Returns ``(None, None)`` when no year can be found.
     """
     months = "|".join(HUNGARIAN_MONTHS)
     full = re.search(rf"(\d{{4}})\.\s*({months})\s+(\d{{1,2}})", text, re.IGNORECASE)
     if full:
-        return datetime.date(
-            int(full.group(1)),
-            HUNGARIAN_MONTHS[full.group(2).lower()],
-            int(full.group(3)),
+        return (
+            datetime.date(
+                int(full.group(1)),
+                HUNGARIAN_MONTHS[full.group(2).lower()],
+                int(full.group(3)),
+            ),
+            DAY_PRECISION,
         )
     year_month = re.search(rf"(\d{{4}})\.\s*({months})", text, re.IGNORECASE)
     if year_month:
-        return datetime.date(
-            int(year_month.group(1)), HUNGARIAN_MONTHS[year_month.group(2).lower()], 1
+        return (
+            datetime.date(
+                int(year_month.group(1)),
+                HUNGARIAN_MONTHS[year_month.group(2).lower()],
+                1,
+            ),
+            MONTH_PRECISION,
         )
     year = re.search(r"(?<!\d)(1\d{3}|20\d{2})(?!\d)", text)
     if year:
-        return datetime.date(int(year.group(1)), 1, 1)
-    return None
+        return datetime.date(int(year.group(1)), 1, 1), YEAR_PRECISION
+    return None, None
+
+
+def parse_hungarian_date(text):
+    """Parse a moly.hu publication date into a ``datetime.date``."""
+    return parse_hungarian_date_precision(text)[0]
+
+
+def sharpens(candidate, candidate_precision, date, precision):
+    """Whether a candidate date is a more precise reading of the same date.
+
+    A printed edition's "2017. június 12." sharpens an ebook edition's bare
+    "2017", because the year they both state agrees. It has to agree on every
+    part the coarser date states, so a 2015 hardback cannot lend its day to a
+    2017 ebook, and a March date cannot sharpen "2023. február".
+    """
+    if candidate is None or date is None:
+        return False
+    if candidate_precision <= precision:
+        return False
+    if candidate.year != date.year:
+        return False
+    if precision >= MONTH_PRECISION and candidate.month != date.month:
+        return False
+    return True
 
 
 def parse_decimal(text):
@@ -76,6 +118,38 @@ def parse_count(text):
     if match:
         return int(re.sub(r"\s", "", match.group()))
     return None
+
+
+# How moly.hu marks an edition as an ebook. The reader icon on the edition line
+# carries the label in its "data-title" and "title" attributes, the icon file
+# itself is named after the reader, and the edition is tagged "ekönyv":
+#
+#   <img class="tooltip" src=".../e-book-reader-black-....png"
+#        data-title="Ekönyv" title="Ekönyv"/>
+#   ... <a class="tag" href="/cimkek/ekonyv">ekönyv</a>
+#
+# All three are matched because moly.hu does not render them consistently:
+# older pages carry the title attribute without the data-title spelling, and
+# the tag link is missing from the edition blocks embedded elsewhere.
+EBOOK_LABELS = ("ekönyv", "e-könyv", "ebook", "e-book")
+EBOOK_TAG_PATH = "/cimkek/ekonyv"
+EBOOK_ICON_NAME = "e-book-reader"
+
+
+def is_ebook_edition(edition):
+    """Whether an edition node describes an ebook rather than a printed book."""
+    if edition is None:
+        return False
+    for label in edition.xpath(".//*/@data-title | .//*/@title"):
+        if str(label).strip().lower() in EBOOK_LABELS:
+            return True
+    for href in edition.xpath(".//a/@href"):
+        if str(href).split("?")[0].rstrip("/").endswith(EBOOK_TAG_PATH):
+            return True
+    for src in edition.xpath(".//img/@src"):
+        if EBOOK_ICON_NAME in str(src):
+            return True
+    return False
 
 
 # Where a title can be cut short. moly.hu files a book under the part before
@@ -211,7 +285,10 @@ class Book:
     def __str__(self) -> str:
         author = (self.authors()[0:1] if self.authors() else ("Unknown",))[0]
         series = f" [{self.series()[0]} / {self.series()[1]}]" if self.series() else ""
-        return f"{author}: {self.title()}{series} ({self.publisher()}, {self.publication_date()}, {self.isbn()}, {self.moly_id()})"
+        # The edition the data was read from is named, so that a run from the
+        # command line shows which of a book's editions answered.
+        edition = "ekönyv" if self.is_ebook() else "nyomtatott"
+        return f"{author}: {self.title()}{series} ({self.publisher()}, {self.publication_date()}, {self.isbn()}, {edition}, {self.moly_id()})"
 
     def moly_id(self):
         return self._moly_id
@@ -257,14 +334,9 @@ class Book:
 
         return series
 
-    def _edition_node(self):
-        # A book page lists one node per edition, each with its own publisher,
-        # year, ISBN and translator. Every edition-derived getter reads from
-        # this single node so the values always describe the same edition; a
-        # book with an old and a re-translated edition would otherwise mix
-        # them. The first edition is used, which is what the positional
-        # lookups below have always effectively picked.
-        editions = self._xml_root.xpath(
+    def _edition_nodes(self):
+        """Every edition node of the book, in the order the page lists them."""
+        return self._xml_root.xpath(
             '//*[@id="content"]//*[@class="items"]'
             '/div[contains(concat(" ", normalize-space(@class), " "), " edition ")]'
         ) or self._xml_root.xpath(
@@ -273,14 +345,95 @@ class Book:
             # document, "...[1]" would be the first one under every parent.
             # Note that "items" is also the class of the review and citation
             # blocks, hence taking only the first one.
-            '(//*[@id="content"]//*[@class="items"])[1]/div[1]'
+            '(//*[@id="content"]//*[@class="items"])[1]/div'
         )
+
+    def _editions(self):
+        """The editions of the block the first one sits in.
+
+        An edition rendered inside a review further down the page is a copy of
+        one of these, so it is left out rather than counted twice.
+        """
+        editions = self._edition_nodes()
+        if not editions:
+            return []
+        block = editions[0].getparent()
+        return [edition for edition in editions if edition.getparent() is block]
+
+    def _primary_edition(self):
+        """The edition the metadata describes.
+
+        The ebook edition is preferred where the page has one, because that is
+        the edition a calibre library actually holds: its ISBN and publication
+        date are its own, and filing the printed edition's ISBN against an
+        epub is simply wrong. Where no edition is marked as an ebook the first
+        one is used.
+        """
+        editions = self._editions()
+        for edition in editions:
+            if is_ebook_edition(edition):
+                return edition
         return editions[0] if editions else None
 
+    def _fill_in_editions(self):
+        """The editions that may fill in what the primary one leaves out.
+
+        Hungarian ebook editions are thinly documented: the line often carries
+        a bare year where the printed edition has a full "Megjelenés
+        időpontja" tooltip, and it can omit the publisher, the translator or
+        even the ISBN. Those are the same book, so the printed editions stand
+        in for what the ebook line does not state.
+
+        This is only done for an ebook. On a page whose editions are all
+        printed, the first one is read on its own as before - a book with an
+        old and a re-translated edition must not end up with the year of one
+        and the translator of another.
+
+        The editions of the same publisher come first, being the most likely
+        to describe the same release; the rest follow in page order.
+        """
+        primary = self._primary_edition()
+        if primary is None or not is_ebook_edition(primary):
+            return []
+        publisher = (self._edition_publisher(primary) or "").strip().lower()
+
+        def same_publisher(edition):
+            name = (self._edition_publisher(edition) or "").strip().lower()
+            return bool(publisher) and name == publisher
+
+        others = [e for e in self._editions() if e is not primary]
+        return sorted(others, key=lambda edition: 0 if same_publisher(edition) else 1)
+
+    def _from_editions(self, reader):
+        """A field off the primary edition, or off the ones filling in for it."""
+        primary = self._primary_edition()
+        value = reader(primary) if primary is not None else None
+        if value is not None:
+            return value
+        for edition in self._fill_in_editions():
+            value = reader(edition)
+            if value is not None:
+                return value
+        return None
+
+    def is_ebook(self):
+        """Whether the edition the data is read from is an ebook."""
+        return is_ebook_edition(self._primary_edition())
+
     def publisher(self):
-        edition = self._edition_node()
+        return self._from_editions(self._edition_publisher)
+
+    def _edition_publisher(self, edition):
         if edition is None:
             return None
+        # The publisher is the /kiadok/ link of the edition line, and being
+        # named by its href it is found wherever the layout puts it - the
+        # positional lookups below miss it as soon as anything is nested
+        # differently, which is what happens on a page whose editions are
+        # wrapped in the "Megnyitás" anchor.
+        for name in edition.xpath('.//a[starts-with(@href, "/kiadok/")]/text()'):
+            if name.strip():
+                return name.strip()
         old_publisher = self._publisher(edition, "./div[1]/a/text()")
         # "+" is the text of the bookmark_button div, which current layouts
         # render as the first child, pushing the publisher one div further.
@@ -295,49 +448,102 @@ class Book:
         return None
 
     def publication_date(self):
-        edition = self._edition_node()
+        """When the edition was published, as precisely as the page says.
+
+        An ebook line usually states a bare year while the printed edition of
+        the same year carries the day in its tooltip. The precise date is the
+        same book's, so it is taken - but only where it agrees with the ebook
+        on every part the ebook states, so that a 2017 ebook can never be
+        given a 2015 hardback's day.
+        """
+        primary = self._primary_edition()
+        best, best_precision = (
+            self._edition_publication_date(primary)
+            if primary is not None
+            else (None, None)
+        )
+        for edition in self._fill_in_editions():
+            candidate, candidate_precision = self._edition_publication_date(edition)
+            if candidate is None:
+                continue
+            if best is None:
+                # The ebook line states no date at all, so the printed
+                # editions are all there is to go on.
+                best, best_precision = candidate, candidate_precision
+            elif sharpens(candidate, candidate_precision, best, best_precision):
+                best, best_precision = candidate, candidate_precision
+        return best
+
+    def _edition_publication_date(self, edition):
+        """An edition's publication date as ``(date, precision)``."""
         if edition is None:
-            return None
+            return None, None
         # The edition line exposes the full publication date in the tooltip of
         # the "Megjelenés időpontja:" abbreviation, e.g.
         # <abbr title="Megjelenés időpontja: 2025. szeptember 4.">2025</abbr>.
-        titles = edition.xpath(".//abbr/@title")
-        for title in titles:
+        for title in edition.xpath(".//abbr/@title"):
             if "Megjelenés időpontja" in title:
-                date = parse_hungarian_date(title)
+                date, precision = parse_hungarian_date_precision(title)
                 if date:
-                    return date
-        # Fallback for editions that only expose a bare year on the edition
-        # line (older layouts where the year is plain text, not a tooltip).
-        return self._publication_date(edition, ".//text()")
-
-    def _publication_date(self, edition, xpath):
-        publication_node = edition.xpath(xpath)
-        for publication_value in publication_node:
+                    return date, precision
+        # Editions that only expose a bare year on the edition line (older
+        # layouts where the year is plain text, and ebook lines, which rarely
+        # carry the tooltip at all).
+        for text in edition.xpath(".//text()"):
             # Match a plausible publication year (1000-2099) that is not part
             # of a longer number. Without the digit guards a bare "\d{4}" would
             # match the leading digits of an ISBN (e.g. "9789634978084" -> 9789)
             # whenever the edition has no year, yielding a bogus pubdate.
-            match = re.search(r"(?<!\d)(1\d{3}|20\d{2})(?!\d)", publication_value)
+            match = re.search(r"(?<!\d)(1\d{3}|20\d{2})(?!\d)", text)
             if match:
-                return datetime.date(int(match.group(1)), 1, 1)
-        return None
+                return datetime.date(int(match.group(1)), 1, 1), YEAR_PRECISION
+        return None, None
 
     def isbn(self):
-        return self._isbn(
-            '//*[@id="content"]//*[@class="items"]/div/div[2]/text()'
-        ) or self._isbn('//*[@id="content"]//*[@class="items"]/div/div[3]/text()')
+        """The ISBN of the edition the metadata describes.
 
-    def _isbn(self, xpath):
-        isbn_node = self._xml_root.xpath(xpath)
-        for isbn_value in isbn_node:
-            match = re.search(r"(\d{13}|\d{10})", isbn_value)
+        The ebook edition's own number where its line states one. moly.hu
+        often leaves it off, and the printed edition's is then reported rather
+        than nothing at all - a record with the paperback's ISBN still names
+        the book, where a record with none names nothing.
+        """
+        return self._from_editions(self._edition_isbn)
+
+    def isbns(self):
+        """The ISBN of every edition listed, in page order, or None.
+
+        A library holding the paperback and a page whose data is read off the
+        ebook edition still describe the same book, so a caller confirming a
+        match by ISBN has to be able to see all of them.
+        """
+        found = []
+        for edition in self._edition_nodes():
+            isbn = self._edition_isbn(edition)
+            if isbn and isbn not in found:
+                found.append(isbn)
+        return found or None
+
+    def _edition_isbn(self, edition):
+        if edition is None:
+            return None
+        # The number is the text right behind the "ISBN" label:
+        #   <strong>ISBN</strong>: 9789635511235
+        # Taking it from there keeps a page count or a cover id from being
+        # read as an ISBN.
+        for label in edition.xpath('.//strong[starts-with(normalize-space(), "ISBN")]'):
+            match = re.search(r"(\d{13}|\d{10})", label.tail or "")
+            if match:
+                return match.group(1)
+        for text in edition.xpath(".//text()"):
+            match = re.search(r"(?<!\d)(\d{13}|\d{10})(?!\d)", text)
             if match:
                 return match.group(1)
         return None
 
     def translator(self):
-        edition = self._edition_node()
+        return self._from_editions(self._edition_translator)
+
+    def _edition_translator(self, edition):
         if edition is None:
             return None
         # The translator sits on the same line as the ISBN, behind a
