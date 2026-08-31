@@ -31,14 +31,13 @@ library. Install both if you want the translator.
 ### Editions
 
 A moly.hu book page lists every edition it knows of, each with its own
-publisher, publication date, ISBN, page count and translator. All the
-edition-derived metadata is read from **one** edition, so that a book with an
-old and a re-translated edition cannot end up with the year of one and the
-translator of another.
+publisher, publication date, ISBN, page count and translator.
 
-Where the page has an ebook edition, that is the one read. moly.hu marks it on
-the edition line with a reader icon labelled *Ekönyv* and tags the edition
-`ekönyv`:
+Where the page has an ebook edition, that is the edition the metadata
+describes: it is the one a calibre library actually holds, and it is a release
+of its own, with its own ISBN and often its own publication date. moly.hu
+marks it on the edition line with a reader icon labelled *Ekönyv* and tags the
+edition `ekönyv`:
 
 ```html
 <div id="edition_840757" class="edition edition_840757">
@@ -50,18 +49,32 @@ the edition line with a reader icon labelled *Ekönyv* and tags the edition
 ```
 
 All three markings are matched (`data-title`, the older `title` spelling and
-the tag link), because moly.hu does not render them consistently. A page with
-no ebook edition is read from its first edition, as before.
+the tag link), because moly.hu does not render them consistently.
 
-The ebook edition is the one a calibre library actually holds, and it is a
-release of its own: its ISBN, page count and often its publication date differ
-from the printed edition's, so filing the paperback's ISBN against an epub is
-simply wrong.
+Hungarian ebook editions are thinly documented, though. The line above states
+a bare `2023` where the printed edition of the same book carries
+`Megjelenés időpontja: 2023. február 18.` in a tooltip, and an ebook line can
+omit the publisher, the translator or even the ISBN. So the printed editions
+fill in for it, field by field:
 
-The printed editions are not thrown away: `Book.isbns()` lists the ISBN of
-every edition on the page. A library holding the paperback still confirms as a
-match against the ebook page, and the metadata source caches all of them, so a
-search by the paperback's ISBN still finds the book.
+| | |
+|---|---|
+| **Publisher, translator** | taken from the ebook line; where it does not state them, from a printed edition |
+| **Publication date** | the ebook's own date, sharpened by a printed edition's more precise one - but only where the two agree on every part the ebook states, so a 2017 ebook can never be given a 2015 hardback's day, and *2023. február* is never sharpened by a March date |
+| **ISBN** | the ebook's own number; where its line states none, the printed edition's, because a record with the paperback's ISBN still names the book where a record with none names nothing |
+
+The edition of the ebook's own publisher fills in first, being the most likely
+to describe the same release; the rest follow in page order.
+
+Filling in is for the ebook edition alone. On a page whose editions are all
+printed, the first one is read on its own, so that a book with an old and a
+re-translated edition cannot end up with the year of one and the translator of
+another.
+
+`Book.isbns()` lists the ISBN of every edition on the page whatever was read.
+A library holding the paperback still confirms as a match against a page read
+off the ebook edition, and the metadata source caches all of them, so a search
+by the paperback's ISBN still finds the book.
 
 ### Moly.hu Translator
 
