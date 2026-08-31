@@ -19,7 +19,7 @@ from calibre. Each front end copies it into its own package at build time:
 | Artifact | Built by | What it does |
 |---|---|---|
 | **Moly.hu Reloaded** | `scripts/create_calibre_plugin_zip.sh` | calibre metadata source: title, authors, series, publisher, publication date, ISBN, tags, rating, comments, covers |
-| **Moly.hu Translator** | `scripts/create_calibre_translator_plugin_zip.sh` | calibre toolbar button that writes the translator, rating, rating count and statistics page URL into custom columns |
+| **Moly.hu Translator** | `scripts/create_calibre_translator_plugin_zip.sh` | calibre toolbar button that writes the translator, rating, rating count, statistics page URL and ebook marker into custom columns |
 | **calibre-web provider** | `scripts/create_calibreweb_plugin_zip.sh` | the same metadata for calibre-web |
 
 The two calibre plugins are separate because calibre loads exactly one plugin
@@ -79,7 +79,7 @@ by the paperback's ISBN still finds the book.
 ### Moly.hu Translator
 
 Adds a **Fetch data from moly.hu** toolbar button. Select books, press it, and
-four values off the moly.hu book page are written into custom columns with
+five values off the moly.hu book page are written into custom columns with
 `db.new_api.set_field`:
 
 | Field | Default column | What it holds |
@@ -88,6 +88,7 @@ four values off the moly.hu book page are written into custom columns with
 | Rating | `#moly_rating` | the score as moly.hu shows it, a percentage from 0 to 100 (`94%` → `94`) |
 | Rating count | `#moly_rating_count` | how many people rated it, from the "62 csillagozás" link |
 | Statistics URL | `#moly_stats_raw` | the book's `/statisztika` page, e.g. `https://moly.hu/konyvek/dennis-e-taylor-mi-bob/statisztika`, for a book that has been rated |
+| Type | `#type` | 📱 where the data was read off an ebook edition |
 
 The rating is kept as the percentage rather than as calibre's 0-5 stars, which
 cannot tell 90% from 94%. The metadata source plugin still fills calibre's own
@@ -109,6 +110,24 @@ refuses to start when none of them resolve.
 
 Each field is written on its own, so a book whose page carries a rating but no
 translator still gets its rating.
+
+### The type marker
+
+A book whose moly.hu page carries an ebook edition is marked in the type
+column, because that is the edition the data was read from (see
+[Editions](#editions) above). Unicode has no e-reader or Kindle glyph, so 📱 -
+the device most of these files are read on - stands in for one, and calibre
+renders it in the column like any other text.
+
+The mark is a setting of its own, next to the column name in *Preferences →
+Plugins → Moly.hu Translator*, so a library that would rather see 📖, 🖥 or the
+word `ekönyv` only has to type it in. Emptying it turns the mark off without
+having to unset the column.
+
+Nothing is written for a page with printed editions only: calibre knows which
+formats the library actually holds, moly.hu only knows what was published, so
+an unmarked book is one moly.hu has no ebook edition for rather than one that
+is certainly paper.
 
 A book is only written when the moly.hu page is confirmed to be the right one,
 by a matching ISBN or a matching title. `search()` returns an unordered set of

@@ -9,17 +9,28 @@ from calibre.utils.config import JSONConfig
 # which one the GUI runs. An interface action runs in the GUI with the library
 # at hand and writes the column directly, so none of that applies.
 
+# What is written into the type column for a book whose moly.hu page carries
+# an ebook edition. Unicode has no e-reader or Kindle glyph, so the mobile
+# phone - the device most of these files are read on - stands in for one. It is
+# a setting rather than a constant because the right mark is a matter of taste:
+# a library that would rather see a book, a screen or the word "ekonyv" only
+# has to type it in.
+EBOOK_MARKER = '\U0001F4F1'  # a phone, rendered by calibre as an emoji
+
 prefs = JSONConfig('plugins/moly_hu_translator')
 prefs.defaults['translator_column'] = '#translator'
 prefs.defaults['rating_column'] = '#moly_rating'
 prefs.defaults['rating_count_column'] = '#moly_rating_count'
 prefs.defaults['statistics_url_column'] = '#moly_stats_raw'
+prefs.defaults['type_column'] = '#type'
+prefs.defaults['ebook_marker'] = EBOOK_MARKER
 
 
 class MolyhuTranslator(InterfaceActionBase):
     name = 'Moly.hu Translator'
-    description = ('Writes the moly.hu translator, rating, rating count and '
-                   'statistics page URL into custom columns for the selected books.')
+    description = ('Writes the moly.hu translator, rating, rating count, '
+                   'statistics page URL and ebook marker into custom columns '
+                   'for the selected books.')
     author = 'Imre NAGY'
     version = (0, 0, 0)
     minimum_calibre_version = (5, 0, 0)
