@@ -78,6 +78,38 @@ def parse_count(text):
     return None
 
 
+# How moly.hu marks an edition as an ebook. The reader icon on the edition line
+# carries the label in its "data-title" and "title" attributes, the icon file
+# itself is named after the reader, and the edition is tagged "ekönyv":
+#
+#   <img class="tooltip" src=".../e-book-reader-black-....png"
+#        data-title="Ekönyv" title="Ekönyv"/>
+#   ... <a class="tag" href="/cimkek/ekonyv">ekönyv</a>
+#
+# All three are matched because moly.hu does not render them consistently:
+# older pages carry the title attribute without the data-title spelling, and
+# the tag link is missing from the edition blocks embedded elsewhere.
+EBOOK_LABELS = ("ekönyv", "e-könyv", "ebook", "e-book")
+EBOOK_TAG_PATH = "/cimkek/ekonyv"
+EBOOK_ICON_NAME = "e-book-reader"
+
+
+def is_ebook_edition(edition):
+    """Whether an edition node describes an ebook rather than a printed book."""
+    if edition is None:
+        return False
+    for label in edition.xpath(".//*/@data-title | .//*/@title"):
+        if str(label).strip().lower() in EBOOK_LABELS:
+            return True
+    for href in edition.xpath(".//a/@href"):
+        if str(href).split("?")[0].rstrip("/").endswith(EBOOK_TAG_PATH):
+            return True
+    for src in edition.xpath(".//img/@src"):
+        if EBOOK_ICON_NAME in str(src):
+            return True
+    return False
+
+
 # Where a title can be cut short. moly.hu files a book under the part before
 # the separator and renders the rest as a subtitle of its own, so the library's
 # "A pénz istenei: A Wall Street összeesküvése Amerika leigázására" is simply
@@ -211,7 +243,10 @@ class Book:
     def __str__(self) -> str:
         author = (self.authors()[0:1] if self.authors() else ("Unknown",))[0]
         series = f" [{self.series()[0]} / {self.series()[1]}]" if self.series() else ""
-        return f"{author}: {self.title()}{series} ({self.publisher()}, {self.publication_date()}, {self.isbn()}, {self.moly_id()})"
+        # The edition the data was read from is named, so that a run from the
+        # command line shows which of a book's editions answered.
+        edition = "ekönyv" if self.is_ebook() else "nyomtatott"
+        return f"{author}: {self.title()}{series} ({self.publisher()}, {self.publication_date()}, {self.isbn()}, {edition}, {self.moly_id()})"
 
     def moly_id(self):
         return self._moly_id
@@ -257,14 +292,9 @@ class Book:
 
         return series
 
-    def _edition_node(self):
-        # A book page lists one node per edition, each with its own publisher,
-        # year, ISBN and translator. Every edition-derived getter reads from
-        # this single node so the values always describe the same edition; a
-        # book with an old and a re-translated edition would otherwise mix
-        # them. The first edition is used, which is what the positional
-        # lookups below have always effectively picked.
-        editions = self._xml_root.xpath(
+    def _edition_nodes(self):
+        """Every edition node of the book, in the order the page lists them."""
+        return self._xml_root.xpath(
             '//*[@id="content"]//*[@class="items"]'
             '/div[contains(concat(" ", normalize-space(@class), " "), " edition ")]'
         ) or self._xml_root.xpath(
@@ -273,14 +303,49 @@ class Book:
             # document, "...[1]" would be the first one under every parent.
             # Note that "items" is also the class of the review and citation
             # blocks, hence taking only the first one.
-            '(//*[@id="content"]//*[@class="items"])[1]/div[1]'
+            '(//*[@id="content"]//*[@class="items"])[1]/div'
         )
-        return editions[0] if editions else None
+
+    def _edition_node(self):
+        # A book page lists one node per edition, each with its own publisher,
+        # year, ISBN and translator. Every edition-derived getter reads from
+        # this single node so the values always describe the same edition; a
+        # book with an old and a re-translated edition would otherwise mix
+        # them.
+        #
+        # The ebook edition is preferred where the page has one, because that
+        # is the edition a calibre library actually holds: its ISBN, page
+        # count and publication date are its own, and filing the printed
+        # edition's ISBN against an epub is simply wrong. Where no edition is
+        # marked as an ebook the first one is used, as before.
+        editions = self._edition_nodes()
+        if not editions:
+            return None
+        # Only the editions of the block the first one sits in are considered,
+        # so that an edition rendered inside a review further down the page
+        # cannot win the preference.
+        block = editions[0].getparent()
+        for edition in editions:
+            if edition.getparent() is block and is_ebook_edition(edition):
+                return edition
+        return editions[0]
+
+    def is_ebook(self):
+        """Whether the edition the data is read from is an ebook."""
+        return is_ebook_edition(self._edition_node())
 
     def publisher(self):
         edition = self._edition_node()
         if edition is None:
             return None
+        # The publisher is the /kiadok/ link of the edition line, and being
+        # named by its href it is found wherever the layout puts it - the
+        # positional lookups below miss it as soon as anything is nested
+        # differently, which is what happens on a page whose editions are
+        # wrapped in the "Megnyitás" anchor.
+        for name in edition.xpath('.//a[starts-with(@href, "/kiadok/")]/text()'):
+            if name.strip():
+                return name.strip()
         old_publisher = self._publisher(edition, "./div[1]/a/text()")
         # "+" is the text of the bookmark_button div, which current layouts
         # render as the first child, pushing the publisher one div further.
@@ -324,14 +389,42 @@ class Book:
         return None
 
     def isbn(self):
-        return self._isbn(
-            '//*[@id="content"]//*[@class="items"]/div/div[2]/text()'
-        ) or self._isbn('//*[@id="content"]//*[@class="items"]/div/div[3]/text()')
+        """The ISBN of the edition the rest of the data comes from.
 
-    def _isbn(self, xpath):
-        isbn_node = self._xml_root.xpath(xpath)
-        for isbn_value in isbn_node:
-            match = re.search(r"(\d{13}|\d{10})", isbn_value)
+        Read from the edition node rather than by position on the page, so
+        that it belongs to the same edition as the publisher, the date and the
+        translator - on a book with both a printed and an ebook edition the
+        positional lookup always answered with the printed one.
+        """
+        return self._isbn(self._edition_node())
+
+    def isbns(self):
+        """The ISBN of every edition listed, in page order, or None.
+
+        A library holding the paperback and a page whose data is read off the
+        ebook edition still describe the same book, so a caller confirming a
+        match by ISBN has to be able to see all of them.
+        """
+        found = []
+        for edition in self._edition_nodes():
+            isbn = self._isbn(edition)
+            if isbn and isbn not in found:
+                found.append(isbn)
+        return found or None
+
+    def _isbn(self, edition):
+        if edition is None:
+            return None
+        # The number is the text right behind the "ISBN" label:
+        #   <strong>ISBN</strong>: 9789635511235
+        # Taking it from there keeps a page count or a cover id from being
+        # read as an ISBN.
+        for label in edition.xpath('.//strong[starts-with(normalize-space(), "ISBN")]'):
+            match = re.search(r"(\d{13}|\d{10})", label.tail or "")
+            if match:
+                return match.group(1)
+        for text in edition.xpath(".//text()"):
+            match = re.search(r"(?<!\d)(\d{13}|\d{10})(?!\d)", text)
             if match:
                 return match.group(1)
         return None

@@ -28,6 +28,41 @@ because they need different things from calibre: a metadata source runs in a
 worker with no library handle, while writing a custom column needs the
 library. Install both if you want the translator.
 
+### Editions
+
+A moly.hu book page lists every edition it knows of, each with its own
+publisher, publication date, ISBN, page count and translator. All the
+edition-derived metadata is read from **one** edition, so that a book with an
+old and a re-translated edition cannot end up with the year of one and the
+translator of another.
+
+Where the page has an ebook edition, that is the one read. moly.hu marks it on
+the edition line with a reader icon labelled *Ekönyv* and tags the edition
+`ekönyv`:
+
+```html
+<div id="edition_840757" class="edition edition_840757">
+  <div><a href="/kiadok/metropolis-media">Metropolis Media</a>, Budapest, 2023
+    <img src=".../e-book-reader-black.png" data-title="Ekönyv" title="Ekönyv"/></div>
+  <div>352 oldal · <strong>ISBN</strong>: 9789635511235 · ...</div>
+  <a class="tag" href="/cimkek/ekonyv">ekönyv</a>
+</div>
+```
+
+All three markings are matched (`data-title`, the older `title` spelling and
+the tag link), because moly.hu does not render them consistently. A page with
+no ebook edition is read from its first edition, as before.
+
+The ebook edition is the one a calibre library actually holds, and it is a
+release of its own: its ISBN, page count and often its publication date differ
+from the printed edition's, so filing the paperback's ISBN against an epub is
+simply wrong.
+
+The printed editions are not thrown away: `Book.isbns()` lists the ISBN of
+every edition on the page. A library holding the paperback still confirms as a
+match against the ebook page, and the metadata source caches all of them, so a
+search by the paperback's ISBN still finds the book.
+
 ### Moly.hu Translator
 
 Adds a **Fetch data from moly.hu** toolbar button. Select books, press it, and

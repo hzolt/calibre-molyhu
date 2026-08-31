@@ -198,8 +198,15 @@ def is_match(book, info):
     "Aliens: Föld ostroma" would match "Aliens: A végső háború".
     """
     isbn = (info.get('identifiers') or {}).get('isbn')
-    if isbn and book.isbn() and only_digits(isbn) == only_digits(book.isbn()):
-        return True
+    # Every edition of the page is compared, not just the one the data is read
+    # from: the page's values come off the ebook edition where there is one,
+    # while the library may hold the paperback, and the two ISBNs differ
+    # although both name this book.
+    if isbn:
+        wanted = only_digits(isbn)
+        if any(wanted == only_digits(candidate)
+               for candidate in (book.isbns() or [])):
+            return True
     page_forms = title_forms(book.title())
     library_forms = title_forms(info.get('title'))
     if not page_forms or not library_forms:
