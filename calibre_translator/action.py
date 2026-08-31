@@ -1,7 +1,6 @@
 import os
 import re
 import time
-import unicodedata
 
 from calibre import browser
 from calibre.constants import config_dir
@@ -167,34 +166,6 @@ def only_digits(text):
     return re.sub(r'\D', '', text or '')
 
 
-def fold(text):
-    """Strip a title down to what two spellings of the same book share.
-
-    Accents are removed as well as case, so a title that lost its diacritics
-    somewhere still compares equal.
-    """
-    stripped = unicodedata.normalize('NFKD', (text or '').replace('​', ''))
-    return ''.join(c for c in stripped if not unicodedata.combining(c)).casefold()
-
-
-def title_tokens(text):
-    """The set of words in a title, ignoring case, accents and punctuation."""
-    return {word for word in re.split(r'\W+', fold(text), flags=re.UNICODE) if word}
-
-
-def title_forms(text):
-    """The word sets a title may legitimately be recognised by, the whole
-    title first, then the part before each colon or dash.
-
-    moly.hu commonly files a book under that first part alone and shows the
-    rest as a subtitle of its own, so the library and the page do not
-    necessarily spell the title out to the same length.
-    """
-    return [tokens for tokens in
-            (title_tokens(variant) for variant in moly_hu.title_variants(text))
-            if tokens]
-
-
 def is_match(book, info):
     """Is this moly.hu page really the book in the library?
 
@@ -202,20 +173,12 @@ def is_match(book, info):
     no meaningful order - the whole back catalogue of the author, typically -
     so picking one without checking would file another book's translator.
 
-    Titles are compared as sets of words rather than as strings, because a
-    translated edition carries both the Hungarian and the original title and
-    the two sides do not agree on the order or the separator: the library may
-    hold "Mégis egymásnak teremtve? - So Not Meant To Be" where moly.hu has
-    "So Not Meant To Be – Mégis egymásnak teremtve?". Requiring the sets to be
-    equal keeps this strict - one title being merely contained in the other is
-    not enough, or "Aliens" would match "A teljes Aliens-gyűjtemény 2."
-
-    One side may stop at the subtitle, though, so its whole title is compared
-    against the shortened forms of the other as well: the page's "A pénz
-    istenei" is the library's "A pénz istenei: A Wall Street összeesküvése
-    Amerika leigázására". Only a full title is ever matched against a
-    shortened one - two shortened titles are not compared with each other, or
-    "Aliens: Föld ostroma" would match "Aliens: A végső háború".
+    An ISBN settles it on its own. Failing that the titles have to agree, in
+    one of the two ways ``moly_hu.title_match_kind`` tells apart, and where
+    they agree on no more than a part of the title the authors have to bear it
+    out: a search for a bare title is answered with every book whose title
+    carries the word, and the part a translated book shares with the library
+    can be a common enough word on its own - "Kicsúszás" is.
     """
     isbn = (info.get('identifiers') or {}).get('isbn')
     # Every edition of the page is compared, not just the one the data is read
@@ -227,11 +190,12 @@ def is_match(book, info):
         if any(wanted == only_digits(candidate)
                for candidate in (book.isbns() or [])):
             return True
-    page_forms = title_forms(book.title())
-    library_forms = title_forms(info.get('title'))
-    if not page_forms or not library_forms:
+    kind = moly_hu.title_match_kind(book.title(), info.get('title'))
+    if kind is None:
         return False
-    return page_forms[0] in library_forms or library_forms[0] in page_forms
+    if kind == 'fragment':
+        return moly_hu.authors_overlap(book.authors(), info.get('authors'))
+    return True
 
 
 def find_book(info, log, abort=None):
@@ -257,8 +221,17 @@ def find_book(info, log, abort=None):
         if budget <= 0 or (abort is not None and abort.is_set()):
             break
         log('Search for: %s' % term)
-        for candidate in sorted(moly_hu.search(term, fetch_page)):
-            if budget <= 0 or (abort is not None and abort.is_set()):
+        log('Search URL: %s' % moly_hu.search_url(term))
+        hits = sorted(moly_hu.search(term, fetch_page))
+        log('%d search hit(s): %s' % (len(hits), ', '.join(hits) or '-'))
+        for candidate in hits:
+            if abort is not None and abort.is_set():
+                break
+            if budget <= 0:
+                # The budget is spent across all the terms together, not per
+                # term, so it can run out with hits still on the list.
+                log('Candidate budget of %d spent, the rest of the hits go '
+                    'unopened' % CANDIDATE_BUDGET)
                 break
             if candidate in seen:
                 continue
@@ -268,6 +241,20 @@ def find_book(info, log, abort=None):
             if book and is_match(book, info):
                 log('Hit URL: %s' % moly_hu.book_url_for_id(candidate))
                 return book
+            if book is None:
+                log('No page for %s' % candidate)
+            else:
+                log('Not this book: %s is "%s" by %s'
+                    % (candidate,
+                       book.title() or '',
+                       ' & '.join(book.authors() or []) or '?'))
+    # Which of the two ways the search came to nothing is the first thing worth
+    # knowing, and "Found 0 results" on its own does not say.
+    if not seen:
+        log('No search hit for any of the terms')
+    else:
+        log('None of the %d page(s) opened is "%s"'
+            % (len(seen), info.get('title') or ''))
     return None
 
 

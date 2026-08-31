@@ -1,6 +1,7 @@
 import datetime
 import json
 import re
+import unicodedata
 from urllib.parse import quote_plus
 
 from lxml.etree import strip_tags
@@ -182,6 +183,126 @@ def title_variants(title):
     return list(dict.fromkeys(variants))
 
 
+def title_fragments(title):
+    """Every form of the title a page may legitimately be recognised by.
+
+    ``title_variants`` keeps the leading parts alone, which is what a search
+    wants: dropping the subtitle broadens a search, dropping the main title
+    does not. Recognising a page needs both halves, because moly.hu files a
+    translated book under both of its titles and puts the original one first -
+    the page's "Spiral – Kicsúszás" is the library's plain "Kicsúszás".
+
+    The whole title stays first, as ``title_variants`` has it, so that a caller
+    can still tell a full title from a part of one by position.
+    """
+    variants = title_variants(title)
+    if not variants:
+        return []
+    parts = [part.strip() for part in SUBTITLE_SEPARATOR.split(title)]
+    return list(dict.fromkeys(variants + [part for part in parts if part]))
+
+
+def strip_invisible(text):
+    """Drop what takes no space, and compose what is left.
+
+    moly.hu writes a zero-width space into its own titles, right after the
+    leading article, so a title that has been through a library once may carry
+    it; accents may arrive decomposed as well. Neither is visible, and both
+    make an otherwise identical string compare - and search - as a different
+    one.
+    """
+    composed = unicodedata.normalize("NFC", text or "")
+    return "".join(c for c in composed if unicodedata.category(c) != "Cf")
+
+
+def fold(text):
+    """Strip a title down to what two spellings of the same book share.
+
+    Accents are removed as well as case, so a title that lost its diacritics
+    somewhere still compares equal.
+    """
+    stripped = unicodedata.normalize("NFKD", strip_invisible(text))
+    return "".join(c for c in stripped if not unicodedata.combining(c)).casefold()
+
+
+def title_tokens(text):
+    """The set of words in a title, ignoring case, accents and punctuation."""
+    return {word for word in re.split(r"\W+", fold(text), flags=re.UNICODE) if word}
+
+
+def title_forms(text):
+    """The word sets a title may be recognised by, the whole title first."""
+    return [
+        tokens
+        for tokens in (title_tokens(fragment) for fragment in title_fragments(text))
+        if tokens
+    ]
+
+
+def title_match_kind(page_title, library_title):
+    """How a moly.hu title and a library one agree, or None if they do not.
+
+    ``"whole"`` - both say the same thing. Word sets are compared rather than
+    strings, because a translated edition carries the Hungarian and the
+    original title alike and the two sides agree on neither the order nor the
+    separator: the library may hold "Mégis egymásnak teremtve? - So Not Meant
+    To Be" where moly.hu has "So Not Meant To Be – Mégis egymásnak teremtve?".
+
+    ``"fragment"`` - one side spells the title out where the other keeps only a
+    part of it: the page's "Spiral – Kicsúszás" against the library's plain
+    "Kicsúszás", or the page's "A pénz istenei" against the library's "A pénz
+    istenei: A Wall Street összeesküvése Amerika leigázására". Only a whole
+    title is ever matched against a part - two parts are never compared with
+    each other, or "Aliens: Föld ostroma" would match "Aliens: A végső háború".
+    Being the looser of the two, it is worth a second opinion from the caller,
+    the author's name being the obvious one.
+    """
+    page_forms = title_forms(page_title)
+    library_forms = title_forms(library_title)
+    if not page_forms or not library_forms:
+        return None
+    if page_forms[0] == library_forms[0]:
+        return "whole"
+    if page_forms[0] in library_forms or library_forms[0] in page_forms:
+        return "fragment"
+    return None
+
+
+def _name_forms(names):
+    """Each name as its set of words, initials left out.
+
+    A single letter is dropped so that "Raymond E. Feist" and "Raymond Feist"
+    still describe the same person.
+    """
+    forms = []
+    for name in names or []:
+        words = frozenset(word for word in re.split(r"\W+", fold(name)) if len(word) > 1)
+        if words:
+            forms.append(words)
+    return forms
+
+
+def authors_overlap(page_authors, library_authors):
+    """Do the two sides name an author in common?
+
+    A name is compared as a set of words, so a different order - moly.hu writes
+    "Bal Khabra" where a library may hold "Khabra, Bal" - still counts, and one
+    name being contained in the other is enough, for the fuller spelling is as
+    likely to be on either side. An empty side leaves the question
+    unanswerable, which is not the same as a no: nothing is turned down for the
+    want of a name.
+    """
+    page_forms = _name_forms(page_authors)
+    library_forms = _name_forms(library_authors)
+    if not page_forms or not library_forms:
+        return True
+    return any(
+        page <= library or library <= page
+        for page in page_forms
+        for library in library_forms
+    )
+
+
 def generate_search_terms(title, authors, identifiers, normalise_title=None):
     """The moly.hu searches to run for a book, in the order to run them.
 
@@ -250,8 +371,13 @@ def book_page_urls_from_seach_page(xml_root):
     # releases, recommendations, ...) that every moly.hu page renders. Scoping
     # to "search_area" keeps those out, so a search with no real hits returns
     # nothing instead of unrelated widget books.
+    #
+    # Both classes are matched as one of possibly several, not as the whole
+    # attribute: a second class added on moly.hu's side would otherwise empty
+    # every search at once, and silently.
     book_list_root = xml_root.xpath(
-        '//div[@class="search_area"]//a[@class="book_selector"]'
+        '//div[contains(concat(" ", normalize-space(@class), " "), " search_area ")]'
+        '//a[contains(concat(" ", normalize-space(@class), " "), " book_selector ")]'
     )
     matches = set()
     for book_item in book_list_root:
@@ -262,9 +388,20 @@ def book_page_urls_from_seach_page(xml_root):
     return matches
 
 
+def search_url(keyword):
+    """The moly.hu search page for a keyword.
+
+    The keyword is cleaned before it is quoted. It is built from a library's
+    title, and an invisible character or a decomposed accent survives
+    quote_plus as a perfectly valid escape that moly.hu then matches against
+    nothing.
+    """
+    query = " ".join(strip_invisible(keyword).split())
+    return f"{DOMAIN}/kereses?utf8=%E2%9C%93&query=" + quote_plus(query)
+
+
 def search(keyword, fetch_page_content):
-    search_url = f"{DOMAIN}/kereses?utf8=%E2%9C%93&query=" + quote_plus(keyword)
-    content = fetch_page_content(search_url)
+    content = fetch_page_content(search_url(keyword))
     return book_page_urls_from_seach_page(parse_page(content))
 
 

@@ -5,9 +5,13 @@ from lxml.html import fromstring
 
 from moly_hu.moly_hu import (
     Book,
+    authors_overlap,
     book_page_urls_from_seach_page,
     generate_search_terms,
     parse_page,
+    search_url,
+    title_fragments,
+    title_match_kind,
     title_variants,
 )
 
@@ -918,3 +922,129 @@ def test_search_multiple_author():
     ]
     result = generate_search_terms(title, authors, identifiers)
     assert result == expected
+
+
+def test_search_page_tolerates_further_classes():
+    # An extra class on either element would empty every search at once if the
+    # class attribute were matched whole, and would do it without a trace.
+    page_content = parse_page(
+        '<html><body>'
+        '<div class="search_area results">'
+        '<p><a class="book_selector fav" href="/konyvek/bal-khabra-spiral-kicsuszas">'
+        'Spiral – Kicsúszás</a></p>'
+        '</div>'
+        '<div id="sidebar"><div class="newest_books">'
+        '<a class="book_selector" href="/konyvek/elisabeth-haich-beavatas">Beavatás</a>'
+        '</div></div>'
+        '</body></html>'
+    )
+
+    assert book_page_urls_from_seach_page(page_content) == {
+        "bal-khabra-spiral-kicsuszas"
+    }
+
+
+def test_title_fragments_keep_both_sides_of_the_separator():
+    # moly.hu files a translated book under both titles and puts the original
+    # one first, so the Hungarian title a library holds is the part that comes
+    # after the separator, not before it.
+    assert title_fragments("Spiral – Kicsúszás") == [
+        "Spiral – Kicsúszás",
+        "Spiral",
+        "Kicsúszás",
+    ]
+
+
+def test_title_fragments_of_a_title_without_a_separator():
+    assert title_fragments("Kicsúszás") == ["Kicsúszás"]
+
+
+def test_title_fragments_of_no_title():
+    assert title_fragments("") == []
+    assert title_fragments(None) == []
+
+
+def test_title_matches_the_part_after_the_separator():
+    # The bug this guards: moly.hu has "Spiral – Kicsúszás" where the library
+    # holds plain "Kicsúszás", and the book was turned down as another one.
+    assert title_match_kind("Spiral – Kicsúszás", "Kicsúszás") == "fragment"
+
+
+def test_title_matches_the_part_before_the_separator():
+    assert (
+        title_match_kind(
+            "A pénz istenei",
+            "A pénz istenei: A Wall Street összeesküvése Amerika leigázására",
+        )
+        == "fragment"
+    )
+
+
+def test_title_matches_whole_whatever_the_order_of_the_two_titles():
+    assert (
+        title_match_kind(
+            "So Not Meant To Be – Mégis egymásnak teremtve?",
+            "Mégis egymásnak teremtve? - So Not Meant To Be",
+        )
+        == "whole"
+    )
+
+
+def test_title_matches_whole_through_a_lost_accent_or_a_zero_width_space():
+    assert title_match_kind("Az ​érzőszívű mágus", "Az erzoszivu magus") == "whole"
+
+
+def test_two_parts_of_a_title_are_never_matched_with_each_other():
+    # Both stop at the same main title, but they are different books.
+    assert title_match_kind("Aliens: Föld ostroma", "Aliens: A végső háború") is None
+
+
+def test_a_title_contained_in_another_is_not_a_match():
+    assert title_match_kind("A teljes Aliens-gyűjtemény 2.", "Aliens") is None
+
+
+def test_no_title_is_no_match():
+    assert title_match_kind("", "Kicsúszás") is None
+    assert title_match_kind("Kicsúszás", None) is None
+
+
+def test_authors_overlap_ignores_the_order_of_the_names():
+    assert authors_overlap(["Bal Khabra"], ["Khabra, Bal"])
+
+
+def test_authors_overlap_ignores_a_middle_initial():
+    assert authors_overlap(["Raymond E. Feist"], ["Raymond Feist"])
+
+
+def test_authors_overlap_on_one_of_several():
+    assert authors_overlap(
+        ["Raymond E. Feist", "Janny Wurts"], ["Janny Wurts"]
+    )
+
+
+def test_authors_of_different_people_do_not_overlap():
+    assert not authors_overlap(["Bal Khabra"], ["Elle Kennedy"])
+
+
+def test_authors_overlap_is_unanswerable_without_a_name():
+    # A missing name is not a no: nothing is turned down for the want of one.
+    assert authors_overlap(None, ["Bal Khabra"])
+    assert authors_overlap(["Bal Khabra"], [])
+
+
+def test_search_url_drops_the_zero_width_space_moly_hu_writes():
+    # moly.hu puts one after the leading article of its own titles, so a title
+    # that has been through a library once may carry it back into the search,
+    # where it is quoted into an escape that matches nothing.
+    assert search_url("Az ​érzőszívű mágus") == search_url("Az érzőszívű mágus")
+
+
+def test_search_url_composes_a_decomposed_accent():
+    assert search_url("Kicsu\u0301sza\u0301s") == search_url("Kicsúszás")
+
+
+def test_search_url_quotes_the_keyword():
+    assert search_url("Bal Khabra Kicsúszás") == (
+        "https://moly.hu/kereses?utf8=%E2%9C%93"
+        "&query=Bal+Khabra+Kics%C3%BAsz%C3%A1s"
+    )

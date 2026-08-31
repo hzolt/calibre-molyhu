@@ -135,19 +135,30 @@ hits - a title search answers with the author's whole back catalogue - so
 taking one on trust would file another book's data. Books that cannot be
 confirmed are reported as not found instead.
 
-### Subtitles
+### Subtitles and double titles
 
 moly.hu often files a book under the first part of its title and shows the rest
 as a subtitle of its own: *A pénz istenei: A Wall Street összeesküvése Amerika
 leigázására* is held there as **A pénz istenei**. A search for the whole title
 finds nothing, so `generate_search_terms()` also tries the part before each
 colon or dash - after the whole title, so the more specific search always runs
-first - and the title check accepts a page whose title is the library title cut
-short at a separator, or the other way round. Only a full title is compared
-with a shortened one; two shortened titles are not, or *Aliens: Föld ostroma*
-would match *Aliens: A végső háború*. The separator has to carry a space (a
-colon before one, a dash on both sides), which keeps *Aliens-gyűjtemény* and
-*20:00* whole.
+first.
+
+A translated book is filed under both of its titles, and the original one comes
+first: *Kicsúszás* is held as **Spiral – Kicsúszás**. The library's title is
+then the part *after* the separator, so the title check (`title_match_kind()`)
+recognises a page by any part its title is cut into, not only by the leading
+one. Only a full title is ever compared with a part; two parts are not, or
+*Aliens: Föld ostroma* would match *Aliens: A végső háború*. The separator has
+to carry a space (a colon before one, a dash on both sides), which keeps
+*Aliens-gyűjtemény* and *20:00* whole.
+
+Recognising a page by a part of its title alone is the looser test - a bare
+title search answers with every book carrying that word - so a match made that
+way also has to be borne out by an author the two sides share
+(`authors_overlap()`, which ignores name order and middle initials, and stands
+aside when either side names nobody). A whole-title match needs no such
+backing.
 
 Each run writes a log in the style of the metadata download log - the page it
 matched, the search terms it tried, and the title, author, publisher,
