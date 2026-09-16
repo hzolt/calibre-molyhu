@@ -65,7 +65,15 @@ def test_book_page_v2():
     ]
     assert sorted(book.tags()) == sorted(expected_tags)  # type:ignore
 
-    expected_description = "Pug, a varázsló inasa megmenti Carline hercegnőt a koboldoktól, ezért nemesi rangot kap… Barátját, Tomast, az utolsó aranysárkány gyönyörű aranykarddal és vérttel ajándékozza meg. A Királyságot több oldalról fenyegeti veszély: a harcias tsuranik és a Fekete Testvériség kegyetlen harcosai megpróbálják elfoglalni a földet, amelyet emberek, tündérek, törpék együtt védelmeznek. Pug egy Résen át másik térdimenzióba kerül, új személyiséget kap, de mágikus képességeivel felülkerekedik az elnyomó Nagy Emberek praktikáin…"
+    expected_description = (
+        "Pug, a varázsló inasa megmenti Carline hercegnőt a koboldoktól, ezért nemesi "
+        "rangot kap… Barátját, Tomast, az utolsó aranysárkány gyönyörű aranykarddal és "
+        "vérttel ajándékozza meg. A Királyságot több oldalról fenyegeti veszély: a "
+        "harcias tsuranik és a Fekete Testvériség kegyetlen harcosai megpróbálják "
+        "elfoglalni a földet, amelyet emberek, tündérek, törpék együtt védelmeznek. Pug "
+        "egy Résen át másik térdimenzióba kerül, új személyiséget kap, de mágikus "
+        "képességeivel felülkerekedik az elnyomó Nagy Emberek praktikáin…"
+    )
     assert book.description() == expected_description
 
 

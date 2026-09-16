@@ -18,9 +18,9 @@ from calibre. Each front end copies it into its own package at build time:
 
 | Artifact | Built by | What it does |
 |---|---|---|
-| **Moly.hu Reloaded** | `scripts/create_calibre_plugin_zip.sh` | calibre metadata source: title, authors, series, publisher, publication date, ISBN, tags, rating, comments, covers |
-| **Moly.hu Translator** | `scripts/create_calibre_translator_plugin_zip.sh` | calibre toolbar button that writes the translator, rating, rating count, statistics page URL and ebook marker into custom columns |
-| **calibre-web provider** | `scripts/create_calibreweb_plugin_zip.sh` | the same metadata for calibre-web |
+| **Moly.hu Reloaded** | `scripts/create_plugin_zip.sh calibre` | calibre metadata source: title, authors, series, publisher, publication date, ISBN, tags, rating, comments, covers |
+| **Moly.hu Translator** | `scripts/create_plugin_zip.sh translator` | calibre toolbar button that writes the translator, rating, rating count, statistics page URL and ebook marker into custom columns |
+| **calibre-web provider** | `scripts/create_plugin_zip.sh calibreweb` | the same metadata for calibre-web |
 
 The two calibre plugins are separate because calibre loads exactly one plugin
 class per zip (`plugin_classes[0]` in `calibre/customize/zipplugin.py`), and
@@ -101,12 +101,15 @@ statistics page at all - it only exists once there is a rating to break down -
 so nothing is written for it rather than a guessed dead link. In a short text
 column calibre renders the URL as a clickable link in *Book details*.
 
-Set the columns in *Preferences → Plugins → Moly.hu Translator*. Any column
-type works: the value is shaped to fit whatever is there, because calibre
-rejects a value whose datatype does not match the column, and a column's type
-cannot be changed once it has been created. Leaving a column blank, or naming
-one that does not exist in the library, simply skips that field; the run only
-refuses to start when none of them resolve.
+Set the columns in *Preferences → Plugins → Moly.hu Translator*. Any text or
+number column works: the value is shaped to fit whatever is there, because
+calibre rejects a value whose datatype does not match the column, and a
+column's type cannot be changed once it has been created. A date, yes/no,
+enumeration or composite column cannot take these values; the dialog says so
+next to the column name, and a write such a column refuses is reported in the
+summary while the other columns are still written. Leaving a column blank, or
+naming one that does not exist in the library, simply skips that field; the
+run only refuses to start when none of them resolve.
 
 Each field is written on its own, so a book whose page carries a rating but no
 translator still gets its rating.
@@ -130,10 +133,11 @@ an unmarked book is one moly.hu has no ebook edition for rather than one that
 is certainly paper.
 
 A book is only written when the moly.hu page is confirmed to be the right one,
-by a matching ISBN or a matching title. `search()` returns an unordered set of
-hits - a title search answers with the author's whole back catalogue - so
-taking one on trust would file another book's data. Books that cannot be
-confirmed are reported as not found instead.
+by a matching ISBN or a matching title. `search()` returns the hits in
+moly.hu's order, best match first, but a title search still answers with the
+author's whole back catalogue, so taking the first one on trust would file
+another book's data. Books that cannot be confirmed are reported as not found
+instead.
 
 ### Subtitles and double titles
 
@@ -174,16 +178,34 @@ dialog) and `CompareMany` (the review dialog) handle standard fields only, and
 a plugin does not get to choose which one the GUI runs. The ISBN merge
 discards custom columns as well. A toolbar action has none of those problems.
 
+### calibre-web
+
+Unzip `Calibre-web_Moly_hu-<version>.zip` and copy both files, `moly_hu.py`
+and `moly_hu_provider.py`, into calibre-web's `cps/metadata_provider/`
+directory, then restart calibre-web. `moly_hu_provider.py` is the shared
+scraper under the name the provider imports it by; calibre-web imports every
+module in that directory, and the scraper defines no provider of its own, so
+it sits there harmlessly. A search opens the first five hits, in moly.hu's
+order.
+
 ## Contributing
 ```
 python -m venv .venv
 source .venv/bin/activate
 pip install -e moly_hu[dev]
 
+flake8
 python -m pytest -v moly_hu/tests/
 ```
 
-Reload in calibre: `calibre-debug -s; calibre-customize -b .; calibre`
+Reload in calibre - the plugin has to be built first, because the scraper is
+copied into it:
+```
+calibre-debug -s
+scripts/create_plugin_zip.sh calibre . /tmp/Calibre_Moly_hu_Reloaded.zip
+calibre-customize -a /tmp/Calibre_Moly_hu_Reloaded.zip
+calibre
+```
 
 VSCode code completion (calibre and calibre-web is one level up in directory tree):
 ```
