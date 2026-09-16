@@ -92,7 +92,9 @@ five values off the moly.hu book page are written into custom columns with
 
 The rating is kept as the percentage rather than as calibre's 0-5 stars, which
 cannot tell 90% from 94%. The metadata source plugin still fills calibre's own
-rating field with the rounded 0-5 value; these columns are separate from it.
+rating field with the 0-5 value, rounded half up to a whole star (90% is five)
+because calibre rounds a downloaded rating to whole stars anyway; these columns
+are separate from it.
 
 The statistics URL costs no extra page open: the book page links to it from
 the "csillagozás" anchor, and where a rated book does not render that anchor

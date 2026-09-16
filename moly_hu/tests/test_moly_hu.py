@@ -4,11 +4,15 @@ from pathlib import Path
 from lxml.html import fromstring
 
 from moly_hu.moly_hu import (
+    CANDIDATE_BUDGET,
     Book,
     authors_overlap,
     bare_year,
     book_page_urls_from_search_page,
+    book_url_for_id,
+    find_book,
     generate_search_terms,
+    is_match,
     normalise_isbn,
     parse_page,
     search,
@@ -553,8 +557,8 @@ def test_rating_is_read_from_the_embedded_json():
 
     assert book.rating_percent() == 90.0
     assert book.rating_count() == 5
-    # 90% * 0.05 is 4.5, and round() breaks a tie towards the even number.
-    assert book.rating() == 4
+    # 90% is four and a half stars, rounded half up to a whole one.
+    assert book.rating() == 5
 
 
 def test_rating_falls_back_to_the_header_when_the_json_is_not_a_percentage():
@@ -1246,3 +1250,201 @@ def test_the_shared_parts_of_a_page_are_read_once():
         "Dennis E. Taylor: MI, Bob [Bobiverzum / 1] "
         "(Metropolis Media, 2017-06-12, 9786155628269, ekönyv, None)"
     )
+
+
+def rated(percent):
+    html = (
+        '<html><head><script type="application/ld+json">'
+        '{"@type": "Book", "aggregateRating": {"ratingValue": "%d%%", '
+        '"ratingCount": "62"}}</script></head><body>'
+        '<div id="content"><h1>Egy könyv</h1></div></body></html>' % percent
+    )
+    return Book(fromstring(html))
+
+
+def test_rating_rounds_half_up_to_whole_stars():
+    # calibre rounds a downloaded rating to whole stars itself, with round(),
+    # which rounds a tie to the even number: 90% came out as four stars and
+    # 50% as two. Rounded here instead, half up.
+    for percent, stars in ((0, 0), (10, 1), (30, 2), (50, 3), (70, 4), (84, 4), (90, 5), (94, 5)):
+        assert rated(percent).rating() == stars, percent
+
+
+class FakeSite:
+    """moly.hu as a dict of URL to page, which fails for any other URL and
+    keeps a list of what was asked for, in order."""
+
+    def __init__(self, pages):
+        self.pages = pages
+        self.fetched = []
+
+    def __call__(self, url):
+        self.fetched.append(url)
+        if url not in self.pages:
+            raise OSError("HTTP 404 " + url)
+        return self.pages[url]
+
+
+def search_page(*moly_ids):
+    return (
+        '<div class="search_area">'
+        + "".join(
+            f'<a class="book_selector" href="/konyvek/{moly_id}">{moly_id}</a>'
+            for moly_id in moly_ids
+        )
+        + "</div>"
+    )
+
+
+def book_page(title, *authors):
+    links = "".join(f'<a href="/alkotok/x">{author}</a>' for author in authors)
+    return (
+        f'<div id="content"><div class="authors">{links}</div>'
+        f'<span class="fn">{title}</span></div>'
+    )
+
+
+def fixture(file_name):
+    return (test_inputs_path / file_name).read_text(encoding="utf-8")
+
+
+FEIST_ID = "raymond-e-feist-az-erzoszivu-magus"
+BOB_ID = "dennis-e-taylor-mi-bob"
+
+
+def test_is_match_by_isbn_however_it_is_spelt():
+    book = read_book("book_page_raymond_feist_az_erzoszivu_magus.htm")
+
+    assert is_match(book, {"title": "Más cím", "identifiers": {"isbn": "963-7519-41-6"}})
+
+
+def test_is_match_by_the_whole_title_needs_no_author():
+    book = read_book("book_page_raymond_feist_az_erzoszivu_magus.htm")
+
+    assert is_match(book, {"title": "Az erzoszivu magus", "authors": ["Valaki Más"]})
+
+
+def test_is_match_by_a_part_of_the_title_needs_an_author_in_common():
+    page = Book(fromstring(book_page("Spiral – Kicsúszás", "Bal Khabra")))
+
+    assert is_match(page, {"title": "Kicsúszás", "authors": ["Khabra, Bal"]})
+    assert not is_match(page, {"title": "Kicsúszás", "authors": ["Elle Kennedy"]})
+
+
+def test_is_match_refuses_another_title_or_none():
+    page = Book(fromstring(book_page("Kicsúszás", "Bal Khabra")))
+
+    assert not is_match(page, {"title": "Beavatás", "authors": ["Bal Khabra"]})
+    assert not is_match(page, {"title": None, "authors": ["Bal Khabra"]})
+
+
+def test_find_book_trusts_a_moly_hu_identifier():
+    site = FakeSite({book_url_for_id(BOB_ID): fixture("book_page_dennis_e_taylor_mi_bob.htm")})
+    lines = []
+
+    book = find_book({"title": "Más cím", "identifiers": {"moly_hu": BOB_ID}}, lines.append, site)
+
+    assert book.moly_id() == BOB_ID
+    assert site.fetched == [book_url_for_id(BOB_ID)]
+
+
+def test_find_book_opens_the_hits_in_order_and_takes_the_first_match():
+    info = {"title": "Az érzőszívű mágus", "authors": ["Raymond E. Feist"], "identifiers": {}}
+    term = "Raymond E. Feist Az érzőszívű mágus"
+    site = FakeSite({
+        search_url(term): fixture("search_page_raymond_feist.htm"),
+        book_url_for_id(FEIST_ID): fixture("book_page_raymond_feist_az_erzoszivu_magus.htm"),
+    })
+    lines = []
+
+    book = find_book(info, lines.append, site)
+
+    assert book.moly_id() == FEIST_ID
+    # One search and one page: the first hit is the book, so nothing else is
+    # opened and the search for the bare title never runs.
+    assert site.fetched == [search_url(term), book_url_for_id(FEIST_ID)]
+    assert "Hit URL: " + book_url_for_id(FEIST_ID) in lines
+
+
+def test_find_book_goes_on_past_a_hit_whose_page_will_not_load():
+    info = {"title": "MI, Bob", "authors": ["Dennis E. Taylor"], "identifiers": {}}
+    site = FakeSite({
+        search_url("Dennis E. Taylor MI, Bob"): search_page("dennis-e-taylor-eltunt", BOB_ID),
+        book_url_for_id(BOB_ID): fixture("book_page_dennis_e_taylor_mi_bob.htm"),
+    })
+    lines = []
+
+    book = find_book(info, lines.append, site)
+
+    assert book.moly_id() == BOB_ID
+    assert any(line.startswith("No page for dennis-e-taylor-eltunt: HTTP 404") for line in lines)
+
+
+def test_find_book_passes_over_a_hit_that_is_another_book():
+    info = {"title": "Kicsúszás", "authors": ["Bal Khabra"], "identifiers": {}}
+    site = FakeSite({
+        search_url("Bal Khabra Kicsúszás"): search_page("bal-khabra-beavatas", "bal-khabra-spiral-kicsuszas"),
+        book_url_for_id("bal-khabra-beavatas"): book_page("Beavatás", "Bal Khabra"),
+        book_url_for_id("bal-khabra-spiral-kicsuszas"): book_page("Spiral – Kicsúszás", "Bal Khabra"),
+    })
+    lines = []
+
+    book = find_book(info, lines.append, site)
+
+    assert book.moly_id() == "bal-khabra-spiral-kicsuszas"
+    assert 'Not this book: bal-khabra-beavatas is "Beavatás" by Bal Khabra' in lines
+
+
+def test_find_book_goes_on_after_a_failed_search():
+    # The author and title search fails outright; the title search answers.
+    info = {"title": "Kicsúszás", "authors": ["Bal Khabra"], "identifiers": {}}
+    site = FakeSite({
+        search_url("Kicsúszás"): search_page("bal-khabra-spiral-kicsuszas"),
+        book_url_for_id("bal-khabra-spiral-kicsuszas"): book_page("Spiral – Kicsúszás", "Bal Khabra"),
+    })
+    lines = []
+
+    book = find_book(info, lines.append, site)
+
+    assert book.moly_id() == "bal-khabra-spiral-kicsuszas"
+    assert any(line.startswith("Search failed: HTTP 404") for line in lines)
+
+
+def test_find_book_spends_its_budget_across_the_terms():
+    # Seven hits, none of them the book: six are opened, in order, and the
+    # search for the bare title never runs.
+    ids = [f"szerzo-anna-konyv-{n}" for n in range(7)]
+    pages = {book_url_for_id(moly_id): book_page(f"Könyv {n}", "Szerző Anna")
+             for n, moly_id in enumerate(ids)}
+    pages[search_url("Szerző Anna Keresett")] = search_page(*ids)
+    pages[search_url("Keresett")] = search_page(*ids)
+    site = FakeSite(pages)
+    lines = []
+
+    book = find_book({"title": "Keresett", "authors": ["Szerző Anna"], "identifiers": {}}, lines.append, site)
+
+    assert book is None
+    assert site.fetched == [search_url("Szerző Anna Keresett")] + [
+        book_url_for_id(moly_id) for moly_id in ids[:CANDIDATE_BUDGET]
+    ]
+    assert any(line.startswith("Candidate budget of 6 spent") for line in lines)
+    assert 'None of the 6 page(s) opened is "Keresett"' in lines
+
+
+def test_find_book_says_when_nothing_was_found_at_all():
+    site = FakeSite({search_url("Senki Semmi"): search_page(), search_url("Semmi"): search_page()})
+    lines = []
+
+    assert find_book({"title": "Semmi", "authors": ["Senki"], "identifiers": {}}, lines.append, site) is None
+    assert "No search hit for any of the terms" in lines
+
+
+def test_find_book_stops_when_aborted():
+    class Aborted:
+        def is_set(self):
+            return True
+
+    site = FakeSite({})
+
+    assert find_book({"title": "Semmi", "authors": [], "identifiers": {}}, print, site, abort=Aborted()) is None
+    assert site.fetched == []

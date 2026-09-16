@@ -11,9 +11,6 @@ from calibre_plugins.moly_hu_translator import EBOOK_MARKER, prefs
 
 import calibre_plugins.moly_hu_translator.moly_hu as moly_hu
 
-MOLY_ID_KEY = moly_hu.MOLY_ID_KEY
-
-
 LOG_PATH = os.path.join(config_dir, 'plugins', 'moly_hu_translator.log')
 
 
@@ -140,8 +137,9 @@ def format_number_for_column(value, column):
         return int(round(value))
     if datatype == 'rating':
         # A calibre rating is 0-10 half stars, so a percentage has to be
-        # rescaled rather than handed over as it stands.
-        return max(0, min(10, int(round(value / 10.0))))
+        # rescaled rather than handed over as it stands - rounded half up, as
+        # the metadata source rounds its stars.
+        return max(0, min(10, int(value / 10.0 + 0.5)))
     if column.get('is_multiple'):
         return [describe_value(value)]
     return describe_value(value)
@@ -166,117 +164,6 @@ def page_fetcher(timeout=FETCH_TIMEOUT):
         return br.open_novisit(url, timeout=timeout).read()
 
     return fetch_page
-
-
-# How many search hits are opened before giving up on a book. moly.hu answers
-# a title search with everything by the author, so the first hit is routinely
-# the wrong book. The hits come in moly.hu's order, best match first, so the
-# budget goes on the likeliest ones.
-CANDIDATE_BUDGET = 6
-
-
-def is_match(book, info):
-    """Is this moly.hu page really the book in the library?
-
-    Nothing is written unless this says yes. A search returns a set of hits in
-    no meaningful order - the whole back catalogue of the author, typically -
-    so picking one without checking would file another book's translator.
-
-    An ISBN settles it on its own. Failing that the titles have to agree, in
-    one of the two ways ``moly_hu.title_match_kind`` tells apart, and where
-    they agree on no more than a part of the title the authors have to bear it
-    out: a search for a bare title is answered with every book whose title
-    carries the word, and the part a translated book shares with the library
-    can be a common enough word on its own - "Kicsúszás" is.
-    """
-    isbn = moly_hu.normalise_isbn((info.get('identifiers') or {}).get('isbn'))
-    # Every edition of the page is compared, not just the one the data is read
-    # from: the page's values come off the ebook edition where there is one,
-    # while the library may hold the paperback, and the two ISBNs differ
-    # although both name this book. Both sides are spelt the same way first,
-    # so that hyphens or a lower-case x in the library's number do not matter.
-    if isbn:
-        if any(isbn == moly_hu.normalise_isbn(candidate)
-               for candidate in (book.isbns() or [])):
-            return True
-    kind = moly_hu.title_match_kind(book.title(), info.get('title'))
-    if kind is None:
-        return False
-    if kind == 'fragment':
-        return moly_hu.authors_overlap(book.authors(), info.get('authors'))
-    return True
-
-
-def find_book(info, log, fetch_page, abort=None):
-    """Locate the book on moly.hu and return it, or None.
-
-    ``fetch_page`` is the job's page fetcher, see ``page_fetcher``.
-
-    Returns the parsed page rather than just the translator so the caller can
-    log what was actually matched - which page a name came from is the first
-    thing worth knowing when a result looks wrong.
-    """
-    moly_id = (info.get('identifiers') or {}).get(MOLY_ID_KEY)
-    if moly_id:
-        # A moly.hu id is already an identified match, so it is trusted.
-        log('Hit URL: %s' % moly_hu.book_url_for_id(moly_id))
-        return moly_hu.book_for_id(moly_id, fetch_page)
-
-    terms = moly_hu.generate_search_terms(
-        info.get('title'), info.get('authors'), info.get('identifiers') or {})
-    log('Search terms: %s' % terms)
-
-    seen = set()
-    budget = CANDIDATE_BUDGET
-    for term in terms:
-        if budget <= 0 or (abort is not None and abort.is_set()):
-            break
-        log('Search for: %s' % term)
-        log('Search URL: %s' % moly_hu.search_url(term))
-        try:
-            hits = moly_hu.search(term, fetch_page)
-        except Exception as err:
-            log('Search failed: %s' % err)
-            continue
-        log('%d search hit(s): %s' % (len(hits), ', '.join(hits) or '-'))
-        for candidate in hits:
-            if abort is not None and abort.is_set():
-                break
-            if budget <= 0:
-                # The budget is spent across all the terms together, not per
-                # term, so it can run out with hits still on the list.
-                log('Candidate budget of %d spent, the rest of the hits go '
-                    'unopened' % CANDIDATE_BUDGET)
-                break
-            if candidate in seen:
-                continue
-            seen.add(candidate)
-            budget -= 1
-            try:
-                book = moly_hu.book_for_id(candidate, fetch_page)
-            except Exception as err:
-                # One page that will not load is no reason to give up on the
-                # rest of the hits.
-                log('No page for %s: %s' % (candidate, err))
-                continue
-            if book and is_match(book, info):
-                log('Hit URL: %s' % moly_hu.book_url_for_id(candidate))
-                return book
-            if book is None:
-                log('No page for %s' % candidate)
-            else:
-                log('Not this book: %s is "%s" by %s'
-                    % (candidate,
-                       book.title() or '',
-                       ' & '.join(book.authors() or []) or '?'))
-    # Which of the two ways the search came to nothing is the first thing worth
-    # knowing, and "Found 0 results" on its own does not say.
-    if not seen:
-        log('No search hit for any of the terms')
-    else:
-        log('None of the %d page(s) opened is "%s"'
-            % (len(seen), info.get('title') or ''))
-    return None
 
 
 def log_book(log, book, values):
@@ -312,7 +199,7 @@ def fetch_book_data(books, abort=None, log=None, notifications=None):
         log('\n' + '*' * 30 + ' %s ' % title + '*' * 30)
         book_started = time.time()
         try:
-            book = find_book(info, log, fetch_page, abort)
+            book = moly_hu.find_book(info, log, fetch_page, abort)
         except Exception as err:
             log.error('Failed: %s' % err)
             missing.append(title)

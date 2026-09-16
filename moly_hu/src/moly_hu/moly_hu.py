@@ -469,6 +469,125 @@ def search(keyword, fetch_page_content):
     return book_page_urls_from_search_page(parse_page(content))
 
 
+# How many search hits are opened before giving up on a book. moly.hu answers
+# a title search with everything by the author, so the first hit is routinely
+# the wrong book. The hits come in moly.hu's order, best match first, so the
+# budget goes on the likeliest ones.
+CANDIDATE_BUDGET = 6
+
+
+def is_match(book, info):
+    """Is this moly.hu page really the book a library describes?
+
+    ``info`` is the library's record as a dict of ``title``, ``authors`` and
+    ``identifiers`` (``isbn`` among them). Nothing should be written off a
+    page unless this says yes: a search answers with the whole back catalogue
+    of the author, typically, so picking a hit without checking would file
+    another book's data.
+
+    An ISBN settles it on its own. Failing that the titles have to agree, in
+    one of the two ways ``title_match_kind`` tells apart, and where they agree
+    on no more than a part of the title the authors have to bear it out: a
+    search for a bare title is answered with every book whose title carries
+    the word, and the part a translated book shares with the library can be a
+    common enough word on its own - "Kicsúszás" is.
+    """
+    isbn = normalise_isbn((info.get("identifiers") or {}).get("isbn"))
+    # Every edition of the page is compared, not just the one the data is read
+    # from: the page's values come off the ebook edition where there is one,
+    # while the library may hold the paperback, and the two ISBNs differ
+    # although both name this book. Both sides are spelt the same way first,
+    # so that hyphens or a lower-case x in the library's number do not matter.
+    if isbn:
+        if any(isbn == normalise_isbn(candidate) for candidate in (book.isbns() or [])):
+            return True
+    kind = title_match_kind(book.title(), info.get("title"))
+    if kind is None:
+        return False
+    if kind == "fragment":
+        return authors_overlap(book.authors(), info.get("authors"))
+    return True
+
+
+def find_book(info, log, fetch_page, abort=None):
+    """Locate the book ``info`` describes on moly.hu and return it, or None.
+
+    ``log`` takes one line of text at a time; ``fetch_page`` answers a URL
+    with the page or raises; ``abort`` is checked between pages when given.
+
+    The parsed page is returned rather than any one field of it, so that the
+    caller can log what was actually matched - which page a value came from
+    is the first thing worth knowing when a result looks wrong.
+    """
+    moly_id = (info.get("identifiers") or {}).get(MOLY_ID_KEY)
+    if moly_id:
+        # A moly.hu id is already an identified match, so it is trusted.
+        log("Hit URL: %s" % book_url_for_id(moly_id))
+        return book_for_id(moly_id, fetch_page)
+
+    terms = generate_search_terms(
+        info.get("title"), info.get("authors"), info.get("identifiers") or {}
+    )
+    log("Search terms: %s" % terms)
+
+    seen = set()
+    budget = CANDIDATE_BUDGET
+    for term in terms:
+        if budget <= 0 or (abort is not None and abort.is_set()):
+            break
+        log("Search for: %s" % term)
+        log("Search URL: %s" % search_url(term))
+        try:
+            hits = search(term, fetch_page)
+        except Exception as err:
+            log("Search failed: %s" % err)
+            continue
+        log("%d search hit(s): %s" % (len(hits), ", ".join(hits) or "-"))
+        for candidate in hits:
+            if abort is not None and abort.is_set():
+                break
+            if budget <= 0:
+                # The budget is spent across all the terms together, not per
+                # term, so it can run out with hits still on the list.
+                log(
+                    "Candidate budget of %d spent, the rest of the hits go "
+                    "unopened" % CANDIDATE_BUDGET
+                )
+                break
+            if candidate in seen:
+                continue
+            seen.add(candidate)
+            budget -= 1
+            try:
+                book = book_for_id(candidate, fetch_page)
+            except Exception as err:
+                # One page that will not load is no reason to give up on the
+                # rest of the hits.
+                log("No page for %s: %s" % (candidate, err))
+                continue
+            if book and is_match(book, info):
+                log("Hit URL: %s" % book_url_for_id(candidate))
+                return book
+            if book is None:
+                log("No page for %s" % candidate)
+            else:
+                log(
+                    'Not this book: %s is "%s" by %s'
+                    % (
+                        candidate,
+                        book.title() or "",
+                        " & ".join(book.authors() or []) or "?",
+                    )
+                )
+    # Which of the two ways the search came to nothing is the first thing worth
+    # knowing, and "Found 0 results" on its own does not say.
+    if not seen:
+        log("No search hit for any of the terms")
+    else:
+        log('None of the %d page(s) opened is "%s"' % (len(seen), info.get("title") or ""))
+    return None
+
+
 # The series link of a book page: "(A Résháború 1.)", "(Aliens 6-7.)" for an
 # omnibus, "(Sorozat 1,5.)" for a half volume. The name is everything before
 # the last run of numbers.
@@ -940,10 +1059,20 @@ class Book:
         return nodes[0] if nodes else None
 
     def rating(self):
+        """The score as calibre's whole stars, 0 to 5, or None.
+
+        A metadata source reports its rating on a 0-5 scale, and calibre
+        rounds what the sources answer to a whole star before it is applied,
+        so half stars cannot reach the library this way; the Moly.hu
+        Translator keeps the percentage itself for a column of its own. The
+        rounding is done here, half up, rather than left to calibre's
+        round(), which rounds a tie to the even number and made 90% four
+        stars and 50% two.
+        """
         percent = self.rating_percent()
         if percent is None:
             return None
-        return round(percent * 0.05)
+        return int(percent / 20 + 0.5)
 
     def rating_percent(self):
         """The score as moly.hu shows it: a percentage from 0 to 100.

@@ -171,22 +171,12 @@ class Molyhu(Source):
             return (self.MOLY_ID_KEY, moly_id, moly_hu.book_url_for_id(moly_id))
         return None
 
-    def get_book_urls(self, identifiers):
-        urls = []
-        moly = self.get_book_url(identifiers)
-        if moly:
-            urls.append(moly)
-        isbn = identifiers.get('isbn')
-        if isbn:
-            urls.append(('isbn', isbn, f'http://www.mokka.hu/mokka/CCL/q=MEGA%3D{isbn}'))
-        return tuple(urls)
+    # The ISBN is deliberately not claimed: a source that returns a URL for
+    # an identifier type takes that link over from calibre for every book in
+    # the library, and calibre's own ISBN link is a live catalogue.
 
     def get_book_url_name(self, idtype, idval, url):
-        if idtype == self.MOLY_ID_KEY:
-            return 'moly.hu'
-        if idtype == 'isbn':
-            return 'mokka.hu'
-        return None
+        return 'moly.hu'
 
     def get_cached_cover_url(self, identifiers):
         moly_id = identifiers.get(self.MOLY_ID_KEY)
