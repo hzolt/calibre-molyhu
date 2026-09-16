@@ -2,6 +2,11 @@ from qt.core import QLabel, QLineEdit, QVBoxLayout, QWidget
 
 from calibre_plugins.moly_hu_translator import EBOOK_MARKER, prefs
 
+# The column types no value of the action can be shaped for: a date, a yes/no
+# or an enumeration has no reading of a name, a percentage or a URL, and a
+# composite column is computed rather than written. calibre refuses the write.
+UNWRITABLE_DATATYPES = ('datetime', 'bool', 'enumeration', 'composite')
+
 
 def describe_column(column):
     """A short, human readable name for the column's shape."""
@@ -32,8 +37,8 @@ class ColumnRow:
     """One "which column does this field go into" setting.
 
     A label, the column name, and a line below it saying what that column
-    turned out to be - the same three widgets for each of the three fields,
-    so they are built once here rather than three times in the dialog.
+    turned out to be - the same three widgets for each of the fields, so they
+    are built once here rather than once per field in the dialog.
     """
 
     def __init__(self, parent, layout, label, pref_key):
@@ -67,8 +72,15 @@ class ColumnRow:
             self.status.setText(
                 _('There is no %s column in this library.') % name)
             return
-        # Any column type works: the value is shaped to fit whatever is here,
-        # because calibre rejects a value that does not match the column.
+        if column.get('datatype') in UNWRITABLE_DATATYPES:
+            self.status.setText(
+                _('%(name)s is a %(kind)s column, which cannot take this '
+                  'value. Use a text or number column.')
+                % {'name': name, 'kind': describe_column(column)})
+            return
+        # Any text or number column works: the value is shaped to fit
+        # whatever is here, because calibre rejects a value that does not
+        # match the column.
         self.status.setText(
             _('%(name)s holds a %(kind)s. The value is written to match it.')
             % {'name': name, 'kind': describe_column(column)})
