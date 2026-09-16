@@ -2,13 +2,16 @@ import datetime
 import json
 import re
 import unicodedata
+from functools import cached_property
 from urllib.parse import quote_plus
 
-from lxml.etree import strip_tags
 from lxml.html import HTMLParser, fromstring
 
 DOMAIN = "https://moly.hu"
 BOOK_URL = DOMAIN + "/konyvek"
+# The identifier type calibre and calibre-web file a moly.hu id under, defined
+# once here so that every front end names it the same way.
+MOLY_ID_KEY = "moly_hu"
 # The book page's statistics sub-page, holding the breakdown behind the single
 # average the book page shows.
 STATISTICS_PATH = "statisztika"
@@ -36,6 +39,26 @@ HUNGARIAN_MONTHS = {
 DAY_PRECISION = 3
 MONTH_PRECISION = 2
 YEAR_PRECISION = 1
+
+# A plausible publication year, 1000-2099, that is not part of a longer number.
+# Without the digit guards a bare "\d{4}" would match the leading digits of an
+# ISBN ("9789634978084" -> 9789) whenever a line states no year.
+YEAR_PATTERN = re.compile(r"(?<!\d)(1\d{3}|20\d{2})(?!\d)")
+PAGE_COUNT_UNIT = "oldal"
+
+
+def bare_year(text):
+    """The first plausible publication year in a text, or None.
+
+    A number followed by "oldal" is a page count, not a year, however many
+    digits it has: an omnibus of 1024 pages was published in no such year.
+    """
+    text = text or ""
+    for match in YEAR_PATTERN.finditer(text):
+        if text[match.end() :].lstrip().startswith(PAGE_COUNT_UNIT):
+            continue
+        return int(match.group(1))
+    return None
 
 
 def parse_hungarian_date_precision(text):
@@ -67,9 +90,9 @@ def parse_hungarian_date_precision(text):
             ),
             MONTH_PRECISION,
         )
-    year = re.search(r"(?<!\d)(1\d{3}|20\d{2})(?!\d)", text)
+    year = bare_year(text)
     if year:
-        return datetime.date(int(year.group(1)), 1, 1), YEAR_PRECISION
+        return datetime.date(year, 1, 1), YEAR_PRECISION
     return None, None
 
 
@@ -119,6 +142,22 @@ def parse_count(text):
     if match:
         return int(re.sub(r"\s", "", match.group()))
     return None
+
+
+# An ISBN as moly.hu prints it: the thirteen digits of a current number, or the
+# ten of an older one, whose check digit can be an X.
+ISBN_PATTERN = re.compile(r"(?<![\dXx])(\d{13}|\d{9}[\dXx])(?![\dXx])")
+
+
+def normalise_isbn(text):
+    """An ISBN reduced to its digits and check letter, in upper case, or None.
+
+    Hyphens, spaces and a lower-case x are all spellings of the same number,
+    and two of them only compare equal once they are spelt the same way.
+    """
+    if not text:
+        return None
+    return re.sub(r"[^0-9Xx]", "", str(text)).upper() or None
 
 
 # How moly.hu marks an edition as an ebook. The reader icon on the edition line
@@ -356,15 +395,29 @@ def parse_page(content):
     return fromstring(content, parser=HTMLParser(encoding="utf-8"))
 
 
-def book_for_id(book_id, fetch_page_content):
-    url = f"{BOOK_URL}/{book_id}"
-    book_page = fetch_page_content(url)
+def book_url_for_id(moly_id):
+    return f"{BOOK_URL}/{moly_id}"
+
+
+def statistics_url_for_id(moly_id):
+    return f"{book_url_for_id(moly_id)}/{STATISTICS_PATH}"
+
+
+def book_for_id(moly_id, fetch_page_content):
+    """The parsed book page of a moly.hu id, or None where there is no page."""
+    book_page = fetch_page_content(book_url_for_id(moly_id))
     if book_page:
-        return Book(xml_root=parse_page(book_page), moly_id=book_id)
+        return Book(xml_root=parse_page(book_page), moly_id=moly_id)
     return None
 
 
-def book_page_urls_from_seach_page(xml_root):
+def book_page_urls_from_search_page(xml_root):
+    """The moly.hu ids of a search page's hits, in the order the page lists them.
+
+    The order is moly.hu's own ranking, best match first, and it is kept: a
+    caller that can only afford to open a few of the hits wants the first ones,
+    not an arbitrary few. A book listed twice is reported once.
+    """
     book_url_prefix = "/konyvek/"
     # Only the genuine search results live inside the "search_area" container.
     # The same "book_selector" class is reused by sidebar widgets (newest
@@ -379,13 +432,17 @@ def book_page_urls_from_seach_page(xml_root):
         '//div[contains(concat(" ", normalize-space(@class), " "), " search_area ")]'
         '//a[contains(concat(" ", normalize-space(@class), " "), " book_selector ")]'
     )
-    matches = set()
+    matches = []
     for book_item in book_list_root:
-        strip_tags(book_item, "strong")
         for url in book_item.xpath("@href"):
             if url.startswith(book_url_prefix):
-                matches.add(url[len(book_url_prefix) :])
-    return matches
+                matches.append(url[len(book_url_prefix) :])
+    return list(dict.fromkeys(matches))
+
+
+# The name the function was first published under, kept for anyone who
+# imported it before the typo was noticed.
+book_page_urls_from_seach_page = book_page_urls_from_search_page
 
 
 def search_url(keyword):
@@ -401,31 +458,112 @@ def search_url(keyword):
 
 
 def search(keyword, fetch_page_content):
+    """The ids of the books a moly.hu search finds, best match first.
+
+    A fetcher that answers a failed request with nothing gets no hits back
+    rather than an error.
+    """
     content = fetch_page_content(search_url(keyword))
-    return book_page_urls_from_seach_page(parse_page(content))
+    if not content:
+        return []
+    return book_page_urls_from_search_page(parse_page(content))
 
 
-def book_url_for_id(id):
-    return f"{BOOK_URL}/{id}"
+# The series link of a book page: "(A Résháború 1.)", "(Aliens 6-7.)" for an
+# omnibus, "(Sorozat 1,5.)" for a half volume. The name is everything before
+# the last run of numbers.
+SERIES_PATTERN = re.compile(r"^\((?P<name>.+?)\s+(?P<index>\d+)(?:[-–,.]\d+)*\.?\)$")
+
+# The language of a book is one of its tags, "angol nyelvű" for one written in
+# English, keyed here as moly.hu spells the tag and valued with the ISO 639-1
+# code calibre and calibre-web expect.
+LANGUAGE_TAG_SUFFIX = "nyelvű"
+LANGUAGE_TAGS = {
+    "magyar nyelvű": "hu",
+    "angol nyelvű": "en",
+    "német nyelvű": "de",
+    "francia nyelvű": "fr",
+    "olasz nyelvű": "it",
+    "spanyol nyelvű": "es",
+    "portugál nyelvű": "pt",
+    "orosz nyelvű": "ru",
+    "ukrán nyelvű": "uk",
+    "lengyel nyelvű": "pl",
+    "cseh nyelvű": "cs",
+    "szlovák nyelvű": "sk",
+    "román nyelvű": "ro",
+    "horvát nyelvű": "hr",
+    "szerb nyelvű": "sr",
+    "szlovén nyelvű": "sl",
+    "bolgár nyelvű": "bg",
+    "görög nyelvű": "el",
+    "török nyelvű": "tr",
+    "holland nyelvű": "nl",
+    "svéd nyelvű": "sv",
+    "norvég nyelvű": "no",
+    "dán nyelvű": "da",
+    "finn nyelvű": "fi",
+    "észt nyelvű": "et",
+    "lett nyelvű": "lv",
+    "litván nyelvű": "lt",
+    "latin nyelvű": "la",
+    "héber nyelvű": "he",
+    "arab nyelvű": "ar",
+    "perzsa nyelvű": "fa",
+    "kínai nyelvű": "zh",
+    "japán nyelvű": "ja",
+    "koreai nyelvű": "ko",
+    "eszperantó nyelvű": "eo",
+}
+
+# The paragraph moly.hu puts in front of a blurb that gives the plot away.
+SPOILER_WARNING = "Vigyázat! Cselekményleírást tartalmaz."
 
 
-def statistics_url_for_id(id):
-    return f"{book_url_for_id(id)}/{STATISTICS_PATH}"
+def paragraph_text(paragraph):
+    """The text of a paragraph, inline markup and all, one line per <br>.
+
+    Reading the direct text nodes alone, as an XPath text() does, drops every
+    word set in italics or linked and leaves a break where it stood; the
+    paragraph is walked instead, so that "a <em>varázsló</em> inasa" reads as
+    the three words it is.
+    """
+    parts = [paragraph.text or ""]
+    for child in paragraph:
+        # A comment has a function for a tag; its text is not the page's.
+        if isinstance(child.tag, str):
+            parts.append("\n" if child.tag == "br" else "".join(child.itertext()))
+        parts.append(child.tail or "")
+    lines = (" ".join(line.split()) for line in "".join(parts).split("\n"))
+    return "\n".join(line for line in lines if line)
 
 
 # FIXME(crash): add isvalid() method to check the required values (id, isbn, title etc.)
 class Book:
+    """A parsed moly.hu book page.
+
+    The getters read the page each time they are asked, except for the parts
+    several of them share - the edition nodes, the schema.org block, the tags -
+    which are read once per instance and kept. A page is never modified after
+    parsing, so nothing kept can go stale.
+    """
+
     def __init__(self, xml_root, moly_id=None):
         self._xml_root = xml_root
         self._moly_id = moly_id
 
     def __str__(self) -> str:
-        author = (self.authors()[0:1] if self.authors() else ("Unknown",))[0]
-        series = f" [{self.series()[0]} / {self.series()[1]}]" if self.series() else ""
+        authors = self.authors()
+        author = authors[0] if authors else "Unknown"
+        series = self.series()
+        series_text = f" [{series[0]} / {series[1]}]" if series else ""
         # The edition the data was read from is named, so that a run from the
         # command line shows which of a book's editions answered.
         edition = "ekönyv" if self.is_ebook() else "nyomtatott"
-        return f"{author}: {self.title()}{series} ({self.publisher()}, {self.publication_date()}, {self.isbn()}, {edition}, {self.moly_id()})"
+        return (
+            f"{author}: {self.title()}{series_text} ({self.publisher()}, "
+            f"{self.publication_date()}, {self.isbn()}, {edition}, {self.moly_id()})"
+        )
 
     def moly_id(self):
         return self._moly_id
@@ -443,34 +581,41 @@ class Book:
             '//*[@id="content"]//*[@class="fn"]/text()'
         ) or self._xml_root.xpath('//*[@id="content"]//*[@class="item"]/text()')
         if title_node:
-            # Cimből a ZWJ (zero-width joiner = nulla szélességű szóköz) karakter (\u200b) eltávolítása
-            return title_node[0].strip().replace("\u200b", "")
+            # moly.hu writes a zero-width space (U+200B) into its titles right
+            # after the leading article. strip_invisible drops it along with
+            # anything else that takes no space, and composes a decomposed
+            # accent, so that the title compares equal to the same title typed.
+            return strip_invisible(title_node[0]).strip() or None
         return None
 
     def series(self):
-        series_node = self._xml_root.xpath(
-            '//*[@id="content"]//*[@class="action"]/text()'
+        """The series and the book's place in it as ``(name, index)``, or None.
+
+        The series link reads "(A Résháború 1.)" and is named by its href, the
+        /sorozatok/ link of the header: the "action" class it carries is shared
+        with the link to the edition list, which would be read instead on a
+        page that has one and no series. An omnibus is listed as "(Aliens
+        6-7.)" and calibre needs a single integer, so the first number of a
+        range is taken. A book in a series without a number - the link then
+        reads the bare series name - is not reported, for calibre has no
+        index to file it under.
+        """
+        texts = self._xml_root.xpath(
+            '//*[@id="content"]//a[starts-with(@href, "/sorozatok/")]/text()'
+        ) or self._xml_root.xpath(
+            # Older layouts, where the series link has no href of its own.
+            '//*[@id="content"]'
+            '//*[contains(concat(" ", normalize-space(@class), " "), " action ")]'
+            "/text()"
         )
-        if not series_node:
+        if not texts:
             return None
-
-        series = series_node[0].strip("().").rsplit(" ", 1)
-        if len(series) < 2:
+        match = SERIES_PATTERN.match(" ".join(str(texts[0]).split()))
+        if not match:
             return None
+        return match.group("name"), int(match.group("index"))
 
-        if series[1] == "kiadás":
-            return None
-        try:
-            series[1] = int(series[1])
-        except Exception:
-            # The index can be a range like "1-2" or "6-7" (omnibus
-            # editions). Calibre needs a single integer, so fall back to the
-            # first number in the range, or 1 if there is no number at all.
-            match = re.match(r"\d+", series[1])
-            series[1] = int(match.group()) if match else 1
-
-        return series
-
+    @cached_property
     def _edition_nodes(self):
         """Every edition node of the book, in the order the page lists them."""
         return self._xml_root.xpath(
@@ -485,18 +630,20 @@ class Book:
             '(//*[@id="content"]//*[@class="items"])[1]/div'
         )
 
+    @cached_property
     def _editions(self):
         """The editions of the block the first one sits in.
 
         An edition rendered inside a review further down the page is a copy of
         one of these, so it is left out rather than counted twice.
         """
-        editions = self._edition_nodes()
+        editions = self._edition_nodes
         if not editions:
             return []
         block = editions[0].getparent()
         return [edition for edition in editions if edition.getparent() is block]
 
+    @cached_property
     def _primary_edition(self):
         """The edition the metadata describes.
 
@@ -506,12 +653,13 @@ class Book:
         epub is simply wrong. Where no edition is marked as an ebook the first
         one is used.
         """
-        editions = self._editions()
+        editions = self._editions
         for edition in editions:
             if is_ebook_edition(edition):
                 return edition
         return editions[0] if editions else None
 
+    @cached_property
     def _fill_in_editions(self):
         """The editions that may fill in what the primary one leaves out.
 
@@ -529,7 +677,7 @@ class Book:
         The editions of the same publisher come first, being the most likely
         to describe the same release; the rest follow in page order.
         """
-        primary = self._primary_edition()
+        primary = self._primary_edition
         if primary is None or not is_ebook_edition(primary):
             return []
         publisher = (self._edition_publisher(primary) or "").strip().lower()
@@ -538,16 +686,16 @@ class Book:
             name = (self._edition_publisher(edition) or "").strip().lower()
             return bool(publisher) and name == publisher
 
-        others = [e for e in self._editions() if e is not primary]
+        others = [e for e in self._editions if e is not primary]
         return sorted(others, key=lambda edition: 0 if same_publisher(edition) else 1)
 
     def _from_editions(self, reader):
         """A field off the primary edition, or off the ones filling in for it."""
-        primary = self._primary_edition()
+        primary = self._primary_edition
         value = reader(primary) if primary is not None else None
         if value is not None:
             return value
-        for edition in self._fill_in_editions():
+        for edition in self._fill_in_editions:
             value = reader(edition)
             if value is not None:
                 return value
@@ -555,7 +703,7 @@ class Book:
 
     def is_ebook(self):
         """Whether the edition the data is read from is an ebook."""
-        return is_ebook_edition(self._primary_edition())
+        return is_ebook_edition(self._primary_edition)
 
     def publisher(self):
         return self._from_editions(self._edition_publisher)
@@ -593,13 +741,13 @@ class Book:
         on every part the ebook states, so that a 2017 ebook can never be
         given a 2015 hardback's day.
         """
-        primary = self._primary_edition()
+        primary = self._primary_edition
         best, best_precision = (
             self._edition_publication_date(primary)
             if primary is not None
             else (None, None)
         )
-        for edition in self._fill_in_editions():
+        for edition in self._fill_in_editions:
             candidate, candidate_precision = self._edition_publication_date(edition)
             if candidate is None:
                 continue
@@ -625,15 +773,18 @@ class Book:
                     return date, precision
         # Editions that only expose a bare year on the edition line (older
         # layouts where the year is plain text, and ebook lines, which rarely
-        # carry the tooltip at all).
-        for text in edition.xpath(".//text()"):
-            # Match a plausible publication year (1000-2099) that is not part
-            # of a longer number. Without the digit guards a bare "\d{4}" would
-            # match the leading digits of an ISBN (e.g. "9789634978084" -> 9789)
-            # whenever the edition has no year, yielding a bogus pubdate.
-            match = re.search(r"(?<!\d)(1\d{3}|20\d{2})(?!\d)", text)
-            if match:
-                return datetime.date(int(match.group(1)), 1, 1), YEAR_PRECISION
+        # carry the tooltip at all). The year stands on the publisher line -
+        # "Szukits, Szeged, 2019", the line holding the /kiadok/ link - so that
+        # line is read first, and the rest of the edition only after it for
+        # the layouts that put the year elsewhere. A page count is left out
+        # either way, so "1024 oldal" on the next line can never stand in for
+        # a missing year.
+        publisher_lines = edition.xpath('.//div[a[starts-with(@href, "/kiadok/")]]')
+        for node in publisher_lines + [edition]:
+            for text in node.xpath(".//text()"):
+                year = bare_year(text)
+                if year:
+                    return datetime.date(year, 1, 1), YEAR_PRECISION
         return None, None
 
     def isbn(self):
@@ -654,7 +805,7 @@ class Book:
         match by ISBN has to be able to see all of them.
         """
         found = []
-        for edition in self._edition_nodes():
+        for edition in self._edition_nodes:
             isbn = self._edition_isbn(edition)
             if isbn and isbn not in found:
                 found.append(isbn)
@@ -668,13 +819,13 @@ class Book:
         # Taking it from there keeps a page count or a cover id from being
         # read as an ISBN.
         for label in edition.xpath('.//strong[starts-with(normalize-space(), "ISBN")]'):
-            match = re.search(r"(\d{13}|\d{10})", label.tail or "")
+            match = ISBN_PATTERN.search(label.tail or "")
             if match:
-                return match.group(1)
+                return match.group(1).upper()
         for text in edition.xpath(".//text()"):
-            match = re.search(r"(?<!\d)(\d{13}|\d{10})(?!\d)", text)
+            match = ISBN_PATTERN.search(text)
             if match:
-                return match.group(1)
+                return match.group(1).upper()
         return None
 
     def translator(self):
@@ -708,12 +859,21 @@ class Book:
         return translators or None
 
     def cover_urls(self):
-        book_covers = self._xml_root.xpath('(//*[@class="coverbox"]//a/@href)')
-        if book_covers:
-            return [f"{DOMAIN}{cover_url}" for cover_url in book_covers]
-        return None
+        hrefs = self._xml_root.xpath(
+            '//*[contains(concat(" ", normalize-space(@class), " "), " coverbox ")]'
+            "//a/@href"
+        )
+        # The page links the cover relative to the site; an absolute URL is
+        # passed through as it stands rather than prefixed a second time.
+        urls = [
+            href if href.startswith("http") else f"{DOMAIN}{href}"
+            for href in hrefs
+            if href
+        ]
+        return urls or None
 
-    def tags(self):
+    @cached_property
+    def _tag_list(self):
         tags_node = (
             self._xml_root.xpath('//*[@id="tags"]//*[@class="hover_link"]/text()')
             or self._xml_root.xpath(
@@ -721,11 +881,13 @@ class Book:
             )
             or self._xml_root.xpath('//*[@id="book_tags"]//*[@rel="tag"]/text()')
         )
-        tags = [str(text) for text in tags_node if text.strip()]
-        if tags:
-            return tags
-        return None
+        tags = (" ".join(str(text).split()) for text in tags_node)
+        return list(dict.fromkeys(tag for tag in tags if tag))
 
+    def tags(self):
+        return list(self._tag_list) or None
+
+    @cached_property
     def _aggregate_rating(self):
         """The schema.org rating block moly.hu embeds in the page head.
 
@@ -798,7 +960,7 @@ class Book:
         # count is genuinely unknown there - still reports its score.
         if self._stated_rating_count() == 0:
             return None
-        stated = (self._aggregate_rating() or {}).get("ratingValue")
+        stated = (self._aggregate_rating or {}).get("ratingValue")
         # Only taken when it is written as a percentage. schema.org means
         # ratingValue to be a score out of bestRating, so a day when moly.hu
         # makes the field conform would otherwise turn a 4.5 into 4.5%. The
@@ -809,6 +971,7 @@ class Book:
                 return percent
         return parse_decimal(self._rating_percent_text())
 
+    @cached_property
     def _statistic_link(self):
         """The "62 csillagozás" anchor, which both names the rating count and
         points at the book's statistics page.
@@ -825,12 +988,12 @@ class Book:
 
     def _stated_rating_count(self):
         """The rating count exactly as the page puts it, a zero included."""
-        stated = (self._aggregate_rating() or {}).get("ratingCount")
+        stated = (self._aggregate_rating or {}).get("ratingCount")
         if stated is not None:
             count = parse_count(stated)
             if count is not None:
                 return count
-        link = self._statistic_link()
+        link = self._statistic_link
         return parse_count(link.text) if link is not None and link.text else None
 
     def rating_count(self):
@@ -858,7 +1021,7 @@ class Book:
         # not a URL worth reporting, however it was arrived at.
         if self._stated_rating_count() == 0:
             return None
-        link = self._statistic_link()
+        link = self._statistic_link
         href = link.get("href") if link is not None else None
         if href:
             return href if href.startswith("http") else DOMAIN + href
@@ -869,48 +1032,48 @@ class Book:
         return None
 
     def languages(self):
+        """The ISO 639-1 codes of the languages the book's tags name, or None.
+
+        moly.hu tags a book "angol nyelvű" when it is written in English and
+        leaves a Hungarian one untagged as often as not, so tags that name no
+        language read as Hungarian. A language tag that is not in the table is
+        another matter: the book is then known not to be Hungarian, and nothing
+        is claimed rather than the wrong thing. A page without tags has nothing
+        to say either way.
+        """
         tags = self.tags()
         if not tags:
             return None
-        langs = []
+        codes = []
+        unknown_language = False
         for tag in tags:
-            langId = self._translateLanguageToCode(tag)
-            if langId is not None:
-                langs.append(langId)
-        if not langs:
-            return ["hu"]
-        return langs
-
-    def _translateLanguageToCode(self, displayLang):
-        displayLang = displayLang.lower().strip() if displayLang else None
-        langTbl = {
-            None: "und",
-            "angol nyelvű": "en",
-            "német nyelvű": "de",
-            "francia nyelvű": "fr",
-            "olasz nyelvű": "it",
-            "spanyol nyelvű": "es",
-            "orosz nyelvű": "ru",
-            "török nyelvű": "tr",
-            "görüg nyelvű": "gr",
-            "kínai nyelvű": "cn",
-            "japán nyelvű": "jp",
-            "magyar nyelvű": "hu",
-        }
-        return langTbl.get(displayLang, None)
+            name = tag.lower()
+            code = LANGUAGE_TAGS.get(name)
+            if code is not None:
+                if code not in codes:
+                    codes.append(code)
+            elif name.endswith(" " + LANGUAGE_TAG_SUFFIX):
+                unknown_language = True
+        if codes:
+            return codes
+        return None if unknown_language else ["hu"]
 
     def description(self):
-        description_node = self._xml_root.xpath(
-            '//*[@id="content"]//*[@class="text" and @id="full_description"]/p/text()'
-        ) \
-        or self._xml_root.xpath('//*[@id="content"]//*[@class="text"]/p/text()') \
-        or self._xml_root.xpath('//*[@id="content"]//*[@class="text shrinkable"]/p/text()')
-        if description_node:
-            join_desc_node = "\n".join(description_node)
-            join_desc_node = join_desc_node.replace("\n\n", "\n")
-            join_desc_node = join_desc_node.replace("\n \n", "\n")
-            join_desc_node = join_desc_node.replace(
-                "Vigyázat! Cselekményleírást tartalmaz.\n", ""
-            )
-            return join_desc_node
-        return None
+        """The blurb, one paragraph per line, or None.
+
+        The spoiler warning moly.hu puts in front of a blurb that gives the
+        plot away sits in a paragraph of its own, in a block of the same class
+        as the blurb, so it is left out by name.
+        """
+        text_class = 'contains(concat(" ", normalize-space(@class), " "), " text ")'
+        paragraphs = self._xml_root.xpath(
+            f'//*[@id="content"]//*[@id="full_description" and {text_class}]/p'
+        ) or self._xml_root.xpath(f'//*[@id="content"]//*[{text_class}]/p')
+        lines = []
+        for paragraph in paragraphs:
+            if "spoiler" in (paragraph.get("class") or "").split():
+                continue
+            text = paragraph_text(paragraph)
+            if text and text != SPOILER_WARNING:
+                lines.append(text)
+        return "\n".join(lines) or None

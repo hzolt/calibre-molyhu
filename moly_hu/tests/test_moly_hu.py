@@ -6,9 +6,12 @@ from lxml.html import fromstring
 from moly_hu.moly_hu import (
     Book,
     authors_overlap,
-    book_page_urls_from_seach_page,
+    bare_year,
+    book_page_urls_from_search_page,
     generate_search_terms,
+    normalise_isbn,
     parse_page,
+    search,
     search_url,
     title_fragments,
     title_match_kind,
@@ -28,7 +31,7 @@ def test_book_page_v2():
 
     assert book.authors() == ["Raymond E. Feist"]
     assert book.title() == "Az érzőszívű mágus"
-    assert book.series() == ["A Résháború", 1]
+    assert book.series() == ("A Résháború", 1)
     assert book.publisher() == "Unikornis"
     assert book.publication_date() == datetime.date(1991, 1, 1)
     assert book.isbn() == "9637519416"
@@ -76,7 +79,7 @@ def test_series_range_index_uses_first_number():
     )
     book = Book(fromstring(html))
 
-    assert book.series() == ["Aliens", 6]
+    assert book.series() == ("Aliens", 6)
 
 
 def test_publication_date_full_from_tooltip():
@@ -701,43 +704,45 @@ def test_translator_is_none_without_label():
 def test_book_with_empty_input():
     book = Book(fromstring("dummy data"))
 
-    assert book.authors() == None
-    assert book.title() == None
-    assert book.series() == None
-    assert book.publisher() == None
-    assert book.publication_date() == None
-    assert book.isbn() == None
-    assert book.translator() == None
-    assert book.cover_urls() == None
-    assert book.tags() == None
-    assert book.rating() == None
-    assert book.rating_percent() == None
-    assert book.rating_count() == None
-    assert book.statistics_url() == None
-    assert book.languages() == None
-    assert book.description() == None
+    assert book.authors() is None
+    assert book.title() is None
+    assert book.series() is None
+    assert book.publisher() is None
+    assert book.publication_date() is None
+    assert book.isbn() is None
+    assert book.translator() is None
+    assert book.cover_urls() is None
+    assert book.tags() is None
+    assert book.rating() is None
+    assert book.rating_percent() is None
+    assert book.rating_count() is None
+    assert book.statistics_url() is None
+    assert book.languages() is None
+    assert book.description() is None
 
 
 def test_search_page():
-    expected_urls = {
-        "raymond-e-feist-janny-wurts-a-birodalom-leanya",
-        "raymond-e-feist-a-demonkiraly-duhe-i-ii",
-        "raymond-e-feist-janny-wurts-a-birodalom-szolgaloja-i-ii",
-        "raymond-e-feist-sethanon-alkonya",
-        "raymond-e-feist-a-kiraly-kaloza-i-ii",
-        "raymond-e-feist-magus-a-mester",
+    # In the order the page lists them, which is moly.hu's ranking: the exact
+    # title comes first, and a caller that opens only a few hits relies on it.
+    expected_urls = [
+        "raymond-e-feist-az-erzoszivu-magus",
         "raymond-e-feist-magus-a-tanitvany",
         "raymond-e-feist-ezusttovis",
+        "raymond-e-feist-magus-a-mester",
+        "raymond-e-feist-sethanon-alkonya",
+        "raymond-e-feist-a-demonkiraly-duhe-i-ii",
+        "raymond-e-feist-janny-wurts-a-birodalom-leanya",
+        "raymond-e-feist-janny-wurts-a-birodalom-szolgaloja-i-ii",
         "raymond-e-feist-verbeli-herceg",
-        "raymond-e-feist-az-erzoszivu-magus",
-    }
+        "raymond-e-feist-a-kiraly-kaloza-i-ii",
+    ]
 
     page_content = fromstring(
         Path(test_inputs_path / "search_page_raymond_feist.htm").read_text(
             encoding="utf-8"
         )
     )
-    book_urls = book_page_urls_from_seach_page(page_content)
+    book_urls = book_page_urls_from_search_page(page_content)
 
     assert book_urls == expected_urls
 
@@ -751,16 +756,14 @@ def test_search_page_no_results_ignores_widget_books():
             encoding="utf-8"
         )
     )
-    book_urls = book_page_urls_from_seach_page(page_content)
+    book_urls = book_page_urls_from_search_page(page_content)
 
-    assert book_urls == set()
+    assert book_urls == []
 
 
 def test_search_author_and_title():
-    authors = ["Raymond E. Feist", "Dummy Additional Author"]
+    authors = ["Raymond E. Feist"]
     title = "Az ​érzőszívű mágus"
-    authors = [authors[0]]
-    title = title
     identifiers = {}
     expected = [
         "Raymond E. Feist Az ​érzőszívű mágus",
@@ -771,13 +774,9 @@ def test_search_author_and_title():
 
 
 def test_search_isbn_only():
-    identifiers = {
-        "isbn": "9637519416",
-        "moly_hu": "raymond-e-feist-az-erzoszivu-magus",
-    }
     authors = []
     title = ""
-    identifiers = {"isbn": identifiers["isbn"]}
+    identifiers = {"isbn": "9637519416"}
     expected = [
         "9637519416",
     ]
@@ -797,15 +796,12 @@ def test_search_title_only():
 
 
 def test_search_order_if_everything_available():
-    authors = ["Raymond E. Feist", "Dummy Additional Author"]
+    authors = ["Raymond E. Feist"]
     title = "Az ​érzőszívű mágus"
     identifiers = {
         "isbn": "9637519416",
         "moly_hu": "raymond-e-feist-az-erzoszivu-magus",
     }
-    authors = [authors[0]]
-    title = title
-    identifiers = identifiers
     expected = [
         "9637519416",
         "Raymond E. Feist Az ​érzőszívű mágus",
@@ -939,9 +935,9 @@ def test_search_page_tolerates_further_classes():
         '</body></html>'
     )
 
-    assert book_page_urls_from_seach_page(page_content) == {
+    assert book_page_urls_from_search_page(page_content) == [
         "bal-khabra-spiral-kicsuszas"
-    }
+    ]
 
 
 def test_title_fragments_keep_both_sides_of_the_separator():
@@ -1047,4 +1043,198 @@ def test_search_url_quotes_the_keyword():
     assert search_url("Bal Khabra Kicsúszás") == (
         "https://moly.hu/kereses?utf8=%E2%9C%93"
         "&query=Bal+Khabra+Kics%C3%BAsz%C3%A1s"
+    )
+
+
+def test_search_page_keeps_the_order_and_reports_a_book_once():
+    # moly.hu ranks its hits, and a caller that opens only the first few wants
+    # the first few. A book the page lists twice is one hit.
+    page_content = parse_page(
+        '<div class="search_area">'
+        '<a class="book_selector" href="/konyvek/b-masodik">B</a>'
+        '<a class="book_selector" href="/konyvek/a-elso">A</a>'
+        '<a class="book_selector" href="/konyvek/b-masodik">B again</a>'
+        "</div>"
+    )
+    assert book_page_urls_from_search_page(page_content) == ["b-masodik", "a-elso"]
+
+
+def test_search_with_no_page_content_finds_nothing():
+    # A fetcher that answers a failed request with nothing is no hits, not a
+    # crash in the parser.
+    assert search("bármi", lambda url: None) == []
+    assert search("bármi", lambda url: "") == []
+
+
+def test_description_keeps_the_words_set_in_italics_or_linked():
+    # The text() of a paragraph is its direct text nodes alone, which drops
+    # every word inside <em> or <a> and leaves a line break where it stood.
+    html = (
+        '<div id="content"><div class="text" id="full_description">'
+        '<p>Pug, a <em>varázsló</em> inasa <a href="/x">megmenti</a> Carline '
+        "hercegnőt.</p><p>Második <strong>bekezdés</strong>.</p></div></div>"
+    )
+    book = Book(fromstring(html))
+
+    assert book.description() == (
+        "Pug, a varázsló inasa megmenti Carline hercegnőt.\nMásodik bekezdés."
+    )
+
+
+def test_description_keeps_a_line_break_and_drops_the_spoiler_warning():
+    html = (
+        '<div id="content">'
+        '<div class="text"><p class="spoiler">Vigyázat! Cselekményleírást '
+        "tartalmaz.</p></div>"
+        '<div class="text shrinkable"><p>Első sor.<br/>Második   sor.</p>'
+        "<p>   </p><p>Új <!-- megjegyzés -->bekezdés.</p></div></div>"
+    )
+    book = Book(fromstring(html))
+
+    assert book.description() == "Első sor.\nMásodik sor.\nÚj bekezdés."
+
+
+def test_isbn_10_with_an_x_check_digit_is_read():
+    html = (
+        '<div id="content"><div class="items"><div class="edition edition_1">'
+        '<div><a href="/kiadok/x">X</a>, Budapest, 1999</div>'
+        "<div>300 oldal · <strong>ISBN</strong>: 963751941x</div>"
+        "</div></div></div>"
+    )
+    book = Book(fromstring(html))
+
+    assert book.isbn() == "963751941X"
+    assert book.isbns() == ["963751941X"]
+
+
+def test_normalise_isbn():
+    assert normalise_isbn("963-7519-41-x") == "963751941X"
+    assert normalise_isbn(" 978 963 551 123 5 ") == "9789635511235"
+    assert normalise_isbn("") is None
+    assert normalise_isbn(None) is None
+    assert normalise_isbn("---") is None
+
+
+def test_a_page_count_is_not_read_as_the_publication_year():
+    # An omnibus of 1024 pages, on an edition line that states no year.
+    html = (
+        '<div id="content"><div class="items"><div class="edition edition_1">'
+        '<div><a href="/kiadok/szukits">Szukits</a>, Szeged </div>'
+        "<div>1024 oldal · <strong>ISBN</strong>: 9789634978084</div>"
+        "</div></div></div>"
+    )
+    book = Book(fromstring(html))
+
+    assert book.publication_date() is None
+    assert bare_year("1024 oldal") is None
+    assert bare_year("1024 oldal, 2019") == 2019
+    assert bare_year("9789634978084") is None
+
+
+def languages_of(*tags):
+    links = "".join(f'<a rel="tag" href="/cimkek/x">{tag}</a>' for tag in tags)
+    html = f'<div id="content"></div><div id="book_tags">{links}</div>'
+    return Book(fromstring(html)).languages()
+
+
+def test_languages_are_iso_639_1_codes():
+    assert languages_of("regény", "görög nyelvű") == ["el"]
+    assert languages_of("kínai nyelvű") == ["zh"]
+    assert languages_of("japán nyelvű") == ["ja"]
+    assert languages_of("cseh nyelvű") == ["cs"]
+    assert languages_of("angol nyelvű", "magyar nyelvű") == ["en", "hu"]
+
+
+def test_tags_naming_no_language_read_as_hungarian():
+    assert languages_of("regény", "fantasy") == ["hu"]
+
+
+def test_an_unknown_language_tag_claims_nothing():
+    # The book is known not to be Hungarian, and nothing more.
+    assert languages_of("regény", "klingon nyelvű") is None
+
+
+def test_tags_are_stripped_and_listed_once():
+    html = (
+        '<div id="content"></div><div id="book_tags">'
+        '<a rel="tag" href="/c"> fantasy </a><a rel="tag" href="/c">fantasy</a>'
+        "</div>"
+    )
+
+    assert Book(fromstring(html)).tags() == ["fantasy"]
+
+
+def test_cover_urls_keep_an_absolute_href_as_it_is():
+    html = (
+        '<div class="coverbox other">'
+        '<a href="https://moly.hu/system/covers/big/a.jpg"><img/></a>'
+        '<a href="/system/covers/big/b.jpg"><img/></a></div>'
+    )
+
+    assert Book(fromstring(html)).cover_urls() == [
+        "https://moly.hu/system/covers/big/a.jpg",
+        "https://moly.hu/system/covers/big/b.jpg",
+    ]
+
+
+def test_title_drops_every_invisible_character_and_composes_accents():
+    # U+200B is what moly.hu writes; a soft hyphen or a byte order mark takes
+    # no space either, and a decomposed accent looks the same as a composed one.
+    html = '<div id="content"><span class="fn">A​ ­komplexum﻿</span></div>'
+    assert Book(fromstring(html)).title() == "A komplexum"
+
+    html = '<div id="content"><span class="fn">Kicsúszás</span></div>'
+    assert Book(fromstring(html)).title() == "Kicsúszás"
+
+
+def test_series_is_named_by_its_link_and_not_by_its_class():
+    # The link to the edition list carries the same "action" class and comes
+    # first on newer pages; the series is the /sorozatok/ link.
+    html = (
+        '<div id="content">'
+        '<a rel="modal" class="action" href="/konyvek/x/kiadasok-boritok-szerint">'
+        "2017</a>"
+        '<a rel="modal" class="action" href="/sorozatok/bobiverzum">(Bobiverzum 1.)</a>'
+        "</div>"
+    )
+    assert Book(fromstring(html)).series() == ("Bobiverzum", 1)
+
+    book = read_book("book_page_dennis_e_taylor_mi_bob.htm")
+    assert book.series() == ("Bobiverzum", 1)
+
+
+def test_a_series_without_a_number_is_not_reported():
+    # A series whose own name opens with a parenthesis used to come out as
+    # "Új) Galaktika Fantasztikus" with an index of 1.
+    html = (
+        '<div id="content"><a class="action" href="/sorozatok/x">'
+        "(Új) Galaktika Fantasztikus Könyvek</a></div>"
+    )
+
+    assert Book(fromstring(html)).series() is None
+
+
+def test_series_index_of_a_half_volume_and_of_a_name_with_a_number():
+    html = '<div id="content"><a class="action" href="/sorozatok/x">(Sorozat 1,5.)</a></div>'
+    assert Book(fromstring(html)).series() == ("Sorozat", 1)
+
+    html = (
+        '<div id="content"><a class="action" href="/sorozatok/x">'
+        "(Star Wars 2 sorozat 3.)</a></div>"
+    )
+    assert Book(fromstring(html)).series() == ("Star Wars 2 sorozat", 3)
+
+
+def test_the_shared_parts_of_a_page_are_read_once():
+    # The editions, the schema.org block and the tags are what most getters
+    # start from, and they are kept after the first read. The whole record
+    # still reads right once everything has been read through them.
+    book = read_book("book_page_dennis_e_taylor_mi_bob.htm")
+
+    assert book._editions is book._editions
+    assert book._aggregate_rating is book._aggregate_rating
+    assert book._tag_list is book._tag_list
+    assert str(book) == (
+        "Dennis E. Taylor: MI, Bob [Bobiverzum / 1] "
+        "(Metropolis Media, 2017-06-12, 9786155628269, ekönyv, None)"
     )
