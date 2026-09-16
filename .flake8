@@ -1,0 +1,8 @@
+# flake8 does not read pyproject.toml, so its settings live here.
+[flake8]
+max-line-length = 200
+# E203: whitespace before ":" (black's slice style); E701: several statements on one line
+extend-ignore = E203, E701
+# calibre injects the translation function into every plugin module.
+builtins = _
+exclude = .git,__pycache__,.venv,venv,build,dist

@@ -3,23 +3,31 @@ import urllib.request
 
 import moly_hu.moly_hu as molyhu
 
-if __name__ == "__main__":
+
+def fetch_page(url):
+    request = urllib.request.Request(
+        url, headers={"User-Agent": "Mozilla/5.0 (compatible; CalibreMolyhu/1.0)"}
+    )
+    with urllib.request.urlopen(request, timeout=30) as response:
+        return response.read()
+
+
+def main():
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "search_for", type=str, help="What to search for eg: Raymond Feist Magus"
     )
-    parser.add_argument("-c", "--count", type=int, default=1)
+    parser.add_argument(
+        "-c", "--count", type=int, default=1,
+        help="How many of the hits to show, best match first",
+    )
     args = parser.parse_args()
-    search_for = args.search_for
-    max_result = args.count
 
-    browser = lambda url: urllib.request.urlopen(
-        urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (compatible; CalibreMolyhu/1.0)"})
-    ).read().decode("utf-8")
+    # The hits come in moly.hu's order, best match first, so the first --count
+    # of them are the ones worth opening.
+    for book_id in molyhu.search(args.search_for, fetch_page)[: args.count]:
+        print(molyhu.book_for_id(book_id, fetch_page))
 
-    book_ids = molyhu.search(search_for, browser)
-    for count, book_id in enumerate(book_ids, start=1):
-        if count > max_result:
-            break
-        book = molyhu.book_for_id(book_id, browser)
-        print(book)
+
+if __name__ == "__main__":
+    main()

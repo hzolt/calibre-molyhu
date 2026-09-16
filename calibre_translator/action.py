@@ -1,5 +1,4 @@
 import os
-import re
 import time
 
 from calibre import browser
@@ -11,9 +10,6 @@ from calibre.gui2.threaded_jobs import ThreadedJob
 from calibre_plugins.moly_hu_translator import EBOOK_MARKER, prefs
 
 import calibre_plugins.moly_hu_translator.moly_hu as moly_hu
-
-MOLY_ID_KEY = 'moly_hu'
-
 
 LOG_PATH = os.path.join(config_dir, 'plugins', 'moly_hu_translator.log')
 
@@ -116,13 +112,11 @@ def format_for_column(value, column):
 
 def format_names_for_column(names, column):
     """A multi-value column takes the list as it is; a single-value one would
-    reject it, so the names are joined with the separator the column uses to
-    display a list.
+    reject it, so the names are joined.
     """
-    is_multiple = column.get('is_multiple') or {}
-    if is_multiple:
+    if column.get('is_multiple'):
         return list(names)
-    return (is_multiple.get('list_to_ui') or ', ').join(names)
+    return ', '.join(names)
 
 
 def format_text_for_column(text, column):
@@ -143,119 +137,33 @@ def format_number_for_column(value, column):
         return int(round(value))
     if datatype == 'rating':
         # A calibre rating is 0-10 half stars, so a percentage has to be
-        # rescaled rather than handed over as it stands.
-        return max(0, min(10, int(round(value / 10.0))))
+        # rescaled rather than handed over as it stands - rounded half up, as
+        # the metadata source rounds its stars.
+        return max(0, min(10, int(value / 10.0 + 0.5)))
     if column.get('is_multiple'):
         return [describe_value(value)]
     return describe_value(value)
 
 
-def fetch_page(url):
-    # Bytes, deliberately: handing lxml a str selects libxml2's unicode path,
-    # where moly.hu pages can abort with a fatal "internal error".
-    return browser().open(url).read()
+# How long to wait for a moly.hu page, in seconds. calibre's browser waits
+# forever by default, and a request that never returns would hold the job.
+FETCH_TIMEOUT = 30
 
 
-# How many search hits are opened before giving up on a book. moly.hu answers
-# a title search with everything by the author, so the first hit is routinely
-# the wrong book.
-CANDIDATE_BUDGET = 6
+def page_fetcher(timeout=FETCH_TIMEOUT):
+    """A fetch function over one browser, to be shared by a whole job.
 
-
-def only_digits(text):
-    return re.sub(r'\D', '', text or '')
-
-
-def is_match(book, info):
-    """Is this moly.hu page really the book in the library?
-
-    Nothing is written unless this says yes. A search returns a set of hits in
-    no meaningful order - the whole back catalogue of the author, typically -
-    so picking one without checking would file another book's translator.
-
-    An ISBN settles it on its own. Failing that the titles have to agree, in
-    one of the two ways ``moly_hu.title_match_kind`` tells apart, and where
-    they agree on no more than a part of the title the authors have to bear it
-    out: a search for a bare title is answered with every book whose title
-    carries the word, and the part a translated book shares with the library
-    can be a common enough word on its own - "Kicsúszás" is.
+    One browser rather than one per page: it keeps its cookies and its
+    connection between requests, which a run over a hundred books is glad of.
+    Bytes are returned, deliberately: handing lxml a str selects libxml2's
+    unicode path, where moly.hu pages can abort with a fatal "internal error".
     """
-    isbn = (info.get('identifiers') or {}).get('isbn')
-    # Every edition of the page is compared, not just the one the data is read
-    # from: the page's values come off the ebook edition where there is one,
-    # while the library may hold the paperback, and the two ISBNs differ
-    # although both name this book.
-    if isbn:
-        wanted = only_digits(isbn)
-        if any(wanted == only_digits(candidate)
-               for candidate in (book.isbns() or [])):
-            return True
-    kind = moly_hu.title_match_kind(book.title(), info.get('title'))
-    if kind is None:
-        return False
-    if kind == 'fragment':
-        return moly_hu.authors_overlap(book.authors(), info.get('authors'))
-    return True
+    br = browser()
 
+    def fetch_page(url):
+        return br.open_novisit(url, timeout=timeout).read()
 
-def find_book(info, log, abort=None):
-    """Locate the book on moly.hu and return it, or None.
-
-    Returns the parsed page rather than just the translator so the caller can
-    log what was actually matched - which page a name came from is the first
-    thing worth knowing when a result looks wrong.
-    """
-    moly_id = (info.get('identifiers') or {}).get(MOLY_ID_KEY)
-    if moly_id:
-        # A moly.hu id is already an identified match, so it is trusted.
-        log('Hit URL: %s' % moly_hu.book_url_for_id(moly_id))
-        return moly_hu.book_for_id(moly_id, fetch_page)
-
-    terms = moly_hu.generate_search_terms(
-        info.get('title'), info.get('authors'), info.get('identifiers') or {})
-    log('Search terms: %s' % terms)
-
-    seen = set()
-    budget = CANDIDATE_BUDGET
-    for term in terms:
-        if budget <= 0 or (abort is not None and abort.is_set()):
-            break
-        log('Search for: %s' % term)
-        log('Search URL: %s' % moly_hu.search_url(term))
-        hits = sorted(moly_hu.search(term, fetch_page))
-        log('%d search hit(s): %s' % (len(hits), ', '.join(hits) or '-'))
-        for candidate in hits:
-            if abort is not None and abort.is_set():
-                break
-            if budget <= 0:
-                # The budget is spent across all the terms together, not per
-                # term, so it can run out with hits still on the list.
-                log('Candidate budget of %d spent, the rest of the hits go '
-                    'unopened' % CANDIDATE_BUDGET)
-                break
-            if candidate in seen:
-                continue
-            seen.add(candidate)
-            budget -= 1
-            book = moly_hu.book_for_id(candidate, fetch_page)
-            if book and is_match(book, info):
-                log('Hit URL: %s' % moly_hu.book_url_for_id(candidate))
-                return book
-            if book is None:
-                log('No page for %s' % candidate)
-            else:
-                log('Not this book: %s is "%s" by %s'
-                    % (candidate,
-                       book.title() or '',
-                       ' & '.join(book.authors() or []) or '?'))
-    # Which of the two ways the search came to nothing is the first thing worth
-    # knowing, and "Found 0 results" on its own does not say.
-    if not seen:
-        log('No search hit for any of the terms')
-    else:
-        log('None of the %d page(s) opened is "%s"'
-            % (len(seen), info.get('title') or ''))
-    return None
+    return fetch_page
 
 
 def log_book(log, book, values):
@@ -277,6 +185,8 @@ def fetch_book_data(books, abort=None, log=None, notifications=None):
     found, missing = {}, []
     total = max(len(books), 1)
     started = time.time()
+    # One browser for the whole job, see page_fetcher.
+    fetch_page = page_fetcher()
 
     for index, (book_id, info) in enumerate(books.items()):
         if abort is not None and abort.is_set():
@@ -289,7 +199,7 @@ def fetch_book_data(books, abort=None, log=None, notifications=None):
         log('\n' + '*' * 30 + ' %s ' % title + '*' * 30)
         book_started = time.time()
         try:
-            book = find_book(info, log, abort)
+            book = moly_hu.find_book(info, log, fetch_page, abort)
         except Exception as err:
             log.error('Failed: %s' % err)
             missing.append(title)
@@ -372,21 +282,22 @@ class MolyhuTranslatorAction(InterfaceAction):
                   'configuration first, and make sure it exists in this '
                   'library.'), show=True)
 
-        rows = self.gui.library_view.selectionModel().selectedRows()
-        if not rows:
+        book_ids = self.gui.library_view.get_selected_ids()
+        if not book_ids:
             return error_dialog(
                 self.gui, _('No books selected'),
                 _('Select the books to fetch the data for.'), show=True)
 
-        model = self.gui.library_view.model()
+        # Three fields rather than the whole record: get_metadata would build
+        # every custom column and format of each book, on the GUI thread, for
+        # every book selected.
         books = {}
-        for row in rows:
-            book_id = model.id(row)
-            mi = db.new_api.get_metadata(book_id)
+        for book_id in book_ids:
             books[book_id] = {
-                'title': mi.title,
-                'authors': list(mi.authors or []),
-                'identifiers': dict(mi.identifiers or {}),
+                'title': db.new_api.field_for('title', book_id),
+                'authors': list(db.new_api.field_for('authors', book_id) or ()),
+                'identifiers': dict(
+                    db.new_api.field_for('identifiers', book_id) or {}),
             }
 
         # Dispatcher, not a plain callable: ThreadedJob invokes the callback
@@ -421,29 +332,43 @@ class MolyhuTranslatorAction(InterfaceAction):
 
         # One set_field per column rather than per book: it is a single bulk
         # write, and the fields do not necessarily cover the same books.
-        writes, done_lines = {}, []
+        writes, reports = {}, {}
         for book_id, values in found.items():
             if not db.new_api.has_id(book_id):
                 continue
-            reported = []
             for key, pref_key, label in FIELDS:
                 target, value = columns.get(key), values.get(key)
                 if target is None or value is None:
                     continue
                 name, column = target
                 writes.setdefault(name, {})[book_id] = format_for_column(value, column)
-                reported.append('%s: %s' % (label, describe_value(value)))
-            if reported:
-                done_lines.append('%s - %s' % (
-                    db.new_api.field_for('title', book_id), ', '.join(reported)))
+                reports.setdefault(book_id, []).append(
+                    (name, label, describe_value(value)))
 
-        touched = set()
+        touched, failed = set(), {}
         for name, values_by_id in writes.items():
-            db.new_api.set_field(name, values_by_id)
+            try:
+                db.new_api.set_field(name, values_by_id)
+            except Exception as err:
+                # A column no value can be shaped for - a date, a yes/no, an
+                # enumeration - refuses the whole write. The other columns are
+                # still written, and the refusal is reported below rather
+                # than left to surface as a traceback with nothing else shown.
+                failed[name] = str(err)
+                continue
             touched.update(values_by_id)
         if touched:
             self.gui.library_view.model().refresh_ids(list(touched), current_row=-1)
             self.gui.tags_view.recount()
+
+        # What was written: the fields of the columns that took them.
+        done_lines = []
+        for book_id, fields in reports.items():
+            reported = ['%s: %s' % (label, text)
+                        for name, label, text in fields if name not in failed]
+            if reported:
+                done_lines.append('%s - %s' % (
+                    db.new_api.field_for('title', book_id), ', '.join(reported)))
 
         # The summary stays to one line and the per book detail goes to
         # det_msg. info_dialog lays the message out in a word wrapped label
@@ -452,8 +377,14 @@ class MolyhuTranslatorAction(InterfaceAction):
         # collapsible "Show details" pane instead, which scrolls.
         summary = _('Wrote data for %(done)d of %(total)d books.') % {
             'done': len(done_lines), 'total': len(found) + len(missing)}
+        if failed:
+            summary += '\n' + _(
+                '%d column(s) refused the value, see the details.') % len(failed)
 
         sections = []
+        if failed:
+            sections.append(_('Not written:') + '\n' + '\n'.join(
+                '%s: %s' % (name, err) for name, err in sorted(failed.items())))
         if done_lines:
             sections.append(_('Written:') + '\n' + '\n'.join(sorted(done_lines)))
         if missing:

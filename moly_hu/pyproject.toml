@@ -14,20 +14,13 @@ dependencies = [
     'lxml'
 ]
 
-requires-python = '>=3.7'
+requires-python = '>=3.8'
 
 [project.optional-dependencies]
-dev = ['pytest']
+dev = ['pytest', 'flake8']
 
 [project.urls]
-Homepage = 'https://github.com/crash5/calibre-molyhu'
-
-[tool.flake8]
-max-line-length = 200
-extend-ignore = [
-    "E203", # Whitespace before ":"
-    "E701"  # Multiple statements on one line
-]
+Homepage = 'https://github.com/hzolt/calibre-molyhu'
 
 [tool.isort]
 profile = "black"
