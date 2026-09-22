@@ -6,8 +6,15 @@ test touches, for as long as it takes to load the front ends. What is tested
 is the front ends' own logic: how a record is built from a page, how hits are
 collected and capped, what a page that will not load costs, how a value is
 shaped for a column.
+
+The metadata source is loaded as the package calibre makes of its zip, with the
+scraper next to it, because how it imports the scraper is part of what is
+tested: calibre installs a new version over a loaded one by running the
+package again, and the scraper it finds then has to be the new one.
 """
+import contextlib
 import datetime
+import importlib
 import importlib.util
 import queue
 import sys
@@ -18,6 +25,10 @@ from pathlib import Path
 import moly_hu.moly_hu as scraper
 
 REPO = Path(__file__).resolve().parents[2]
+# The metadata source's package name in calibre, and the directory that plays
+# the part of its zip: the scraper sits there as moly_hu.py, as in the zip.
+RELOADED = "calibre_plugins.moly_hu_reloaded"
+SCRAPER_DIR = REPO / "moly_hu" / "src" / "moly_hu"
 INPUTS = Path(__file__).parent / "inputs"
 FEIST_ID = "raymond-e-feist-az-erzoszivu-magus"
 BOB_ID = "dennis-e-taylor-mi-bob"
@@ -172,9 +183,7 @@ STAND_INS = {
                      "info_dialog": lambda *a, **k: None},
     "calibre.gui2.actions": {"InterfaceAction": type("InterfaceAction", (), {})},
     "calibre.gui2.threaded_jobs": {"ThreadedJob": object},
-    "calibre_plugins": {},
-    "calibre_plugins.moly_hu_reloaded": {"moly_hu": scraper},
-    "calibre_plugins.moly_hu_reloaded.moly_hu": scraper,
+    "calibre_plugins": {"__path__": []},
     "calibre_plugins.moly_hu_translator": {
         "moly_hu": scraper, "EBOOK_MARKER": EBOOK_MARKER,
         "prefs": {"ebook_marker": EBOOK_MARKER, "translator_column": "#translator",
@@ -193,10 +202,13 @@ STAND_INS = {
 }
 
 
-def load_front_ends():
-    """Load the three front ends with the hosts stood in, then take the
-    stand-ins down again so that nothing else sees them."""
-    replaced = {name: sys.modules.get(name) for name in STAND_INS}
+@contextlib.contextmanager
+def hosts_stood_in():
+    """calibre and calibre-web stood in for while the block runs, and taken
+    down again afterwards - the plugin package included - so that nothing
+    else sees them."""
+    touched = list(STAND_INS) + [RELOADED, RELOADED + ".moly_hu"]
+    replaced = {name: sys.modules.get(name) for name in touched}
     for name, attrs in STAND_INS.items():
         if isinstance(attrs, dict):
             module = types.ModuleType(name)
@@ -205,17 +217,37 @@ def load_front_ends():
             module = attrs
         sys.modules[name] = module
     try:
-        return (
-            load("moly_hu_reloaded_plugin", REPO / "calibre" / "__init__.py"),
-            load("moly_hu_translator_action", REPO / "calibre_translator" / "action.py"),
-            load("moly_hu_calibreweb_provider", REPO / "calibre-web" / "moly_hu.py"),
-        )
+        yield
     finally:
         for name, original in replaced.items():
             if original is None:
                 sys.modules.pop(name, None)
             else:
                 sys.modules[name] = original
+
+
+def load_reloaded_plugin():
+    """The metadata source as calibre loads it out of its zip: the package
+    calibre_plugins.moly_hu_reloaded, whose __init__ imports the scraper that
+    sits next to it."""
+    spec = importlib.util.spec_from_file_location(
+        RELOADED, REPO / "calibre" / "__init__.py",
+        submodule_search_locations=[str(SCRAPER_DIR)],
+    )
+    package = importlib.util.module_from_spec(spec)
+    package._ = lambda text: text  # calibre injects the translation function
+    sys.modules[RELOADED] = package
+    spec.loader.exec_module(package)
+    return package
+
+
+def load_front_ends():
+    with hosts_stood_in():
+        return (
+            load_reloaded_plugin(),
+            load("moly_hu_translator_action", REPO / "calibre_translator" / "action.py"),
+            load("moly_hu_calibreweb_provider", REPO / "calibre-web" / "moly_hu.py"),
+        )
 
 
 def load(name, path):
@@ -304,6 +336,30 @@ def test_identify_stops_on_abort():
 
     assert drain(results) == []
     assert source.browser.calls == []
+
+
+def test_installing_over_a_loaded_version_imports_the_new_scraper():
+    # calibre installs a zip over a plugin it has already loaded by running the
+    # package's __init__ again and nothing else - zipplugin.py reloads the
+    # package, not the modules it imported - so the scraper of the version
+    # being replaced is still in sys.modules. 3.2.1 installed over 3.2.0 read
+    # a name off it that 3.2.0's scraper did not have, and failed with
+    #   AttributeError: module 'calibre_plugins.moly_hu_reloaded.moly_hu'
+    #   has no attribute 'MOLY_ID_KEY'
+    with hosts_stood_in():
+        package = load_reloaded_plugin()
+        stale = types.ModuleType(RELOADED + ".moly_hu")  # the old scraper, no MOLY_ID_KEY
+        sys.modules[stale.__name__] = stale
+        package.moly_hu = stale
+
+        # What importlib.reload does once it has found the package again.
+        package.__spec__.loader.exec_module(package)
+
+        assert package.moly_hu is not stale
+        assert package.moly_hu is sys.modules[RELOADED + ".moly_hu"]
+        assert package.Molyhu.MOLY_ID_KEY == "moly_hu"
+        assert "identifier:moly_hu" in package.Molyhu.touched_fields
+        assert package.moly_hu.find_book is not None
 
 
 def test_get_book_url_is_one_triple_and_the_isbn_is_left_to_calibre():

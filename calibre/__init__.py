@@ -1,5 +1,7 @@
 from queue import Empty, Queue
 import datetime
+import importlib
+import sys
 
 from calibre.utils.date import utc_tz
 from calibre.utils.cleantext import clean_ascii_chars
@@ -7,7 +9,25 @@ from calibre.ebooks.metadata.sources.base import Source, Option
 from calibre.ebooks.metadata.book.base import Metadata
 from calibre.ebooks.metadata import check_isbn
 
-import calibre_plugins.moly_hu_reloaded.moly_hu as moly_hu
+
+def _load_scraper():
+    """The scraper that ships in this zip, imported afresh.
+
+    calibre installs a plugin over one it has already loaded by running this
+    file again and nothing else: zipplugin.py reloads the package, not the
+    modules the package imported. A plain import would then hand back the
+    scraper of the version being replaced, and this version would run against
+    it - which is how installing 3.2.1 over 3.2.0 failed on MOLY_ID_KEY, a
+    name the old scraper did not have. Dropping the cached module first makes
+    the import read it out of the new zip, which calibre has registered by the
+    time this runs. On a first load there is nothing cached to drop.
+    """
+    name = __name__ + '.moly_hu'
+    sys.modules.pop(name, None)
+    return importlib.import_module(name)
+
+
+moly_hu = _load_scraper()
 
 # How long to wait for a moly.hu page, in seconds, when calibre states no
 # timeout of its own.
