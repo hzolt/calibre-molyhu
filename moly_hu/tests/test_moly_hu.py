@@ -1511,3 +1511,18 @@ def test_editions_outside_an_items_block():
     assert book.isbns() == ["9789634700715", "9789634701576"]
     # The ebook line states a bare 2019, the printed one the day.
     assert book.publication_date() == datetime.date(2019, 4, 25)
+
+
+def test_an_edition_copied_into_a_review_is_not_counted_twice():
+    # The same layout as Pókfény, but a review carries a copy of the ebook
+    # edition. The page's own editions are read, the copy is left out.
+    book = read_book("book_page_chris_beckett_sotet_eden.htm")
+
+    assert book.title() == "Sötét Éden"
+    assert book.series() == ("Sötét Éden", 1)
+    assert book.is_ebook() is True
+    assert book.publisher() == "Agave Könyvek"
+    assert book.translator() == ["Farkas Veronika"]
+    assert book.isbn() == "9789634190615"
+    assert book.isbns() == ["9789634190486", "9789634190615"]
+    assert book.publication_date() == datetime.date(2016, 2, 16)
