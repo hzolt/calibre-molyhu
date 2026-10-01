@@ -47,6 +47,44 @@ YEAR_PATTERN = re.compile(r"(?<!\d)(1\d{3}|20\d{2})(?!\d)")
 PAGE_COUNT_UNIT = "oldal"
 
 
+# The label in front of the translator's name, "Fordította" or "Fordították",
+# with the colon behind it.
+TRANSLATOR_LABEL = re.compile(r"Fordít\w*\s*:?\s*")
+# What separates the names of several translators.
+TRANSLATOR_SEPARATORS = re.compile(r",|\s+és\s+|\s*&\s*")
+# What ends a credit on an edition line: the dot separator, or the next label
+# where it is written as plain text ("Illusztrálta: ...").
+LINE_STOP = re.compile(r"·|\b[A-ZÁÉÍÓÖŐÚÜŰ][a-záéíóöőúüű]+(?:ta|te|ták|ték)\s*:")
+# The elements moly.hu writes a label of an edition line in.
+LABEL_TAGS = ("strong", "b")
+
+
+def is_creator_link(node):
+    href = node.get("href") or ""
+    return node.tag == "a" and "/alkotok/" in href
+
+
+def walk_line(node):
+    """The content of an element in document order, for reading a credit.
+
+    Yields ``(kind, element, text)``: "text" for a piece of text (the element
+    is the one the text sits in), "start" and "end" around an element, and
+    "link" for a link to a creator page, whose own content is not walked.
+    """
+    yield "start", node, None
+    if node.text:
+        yield "text", node, node.text
+    for child in node:
+        if isinstance(child.tag, str):
+            if is_creator_link(child):
+                yield "link", child, None
+            else:
+                yield from walk_line(child)
+        if child.tail:
+            yield "text", node, child.tail
+    yield "end", node, None
+
+
 def bare_year(text):
     """The first plausible publication year in a text, or None.
 
@@ -737,16 +775,25 @@ class Book:
     @cached_property
     def _edition_nodes(self):
         """Every edition node of the book, in the order the page lists them."""
+        # Found by the "edition" class wherever they sit: the editions used to
+        # be wrapped in an "items" block, current pages put them straight
+        # into the content as "flex edition" divs. A copy of an edition shown
+        # inside a review is found too; _editions leaves it out.
         return self._xml_root.xpath(
-            '//*[@id="content"]//*[@class="items"]'
-            '/div[contains(concat(" ", normalize-space(@class), " "), " edition ")]'
+            '//*[@id="content"]'
+            '//div[contains(concat(" ", normalize-space(@class), " "), " edition ")]'
         ) or self._xml_root.xpath(
             # Older layouts render the edition without the "edition" class.
             # The parentheses matter: "(...)[1]" is the first node in the
             # document, "...[1]" would be the first one under every parent.
             # Note that "items" is also the class of the review and citation
-            # blocks, hence taking only the first one.
+            # blocks, hence taking only the first one - and never a review or
+            # a citation, which on a page without editions in an "items"
+            # block would otherwise be read as one, the reviewer's name
+            # standing in for the publisher.
             '(//*[@id="content"]//*[@class="items"])[1]/div'
+            '[not(contains(concat(" ", normalize-space(@class), " "), " review "))'
+            ' and not(contains(concat(" ", normalize-space(@class), " "), " citation "))]'
         )
 
     @cached_property
@@ -961,20 +1008,50 @@ class Book:
         # own, and its position varies between layouts. Collecting every
         # /alkotok/ link of the line would also pick up other credits such as
         # "Illusztrálta", so the walk stops at the next label.
-        labels = edition.xpath('.//strong[starts-with(normalize-space(), "Fordít")]')
-        if not labels:
-            return None
-
+        #
+        # The walk follows the document order rather than the label's
+        # siblings, so that a name wrapped in a span of its own is still
+        # reached, and it keeps a name moly.hu has no creator page for - that
+        # one is plain text, not a link. The label itself may be plain text.
         translators = []
-        for sibling in labels[0].itersiblings():
-            if sibling.tag == "strong":
-                break
-            if sibling.tag == "a" and (sibling.get("href") or "").startswith(
-                "/alkotok/"
-            ):
-                name = (sibling.text or "").strip()
+        collecting = False
+        line = None
+        for kind, node, text in walk_line(edition):
+            if not collecting:
+                if kind != "text":
+                    continue
+                match = TRANSLATOR_LABEL.search(text)
+                if not match:
+                    continue
+                collecting = True
+                # A label element is not the line itself: the names follow
+                # behind it, in the element holding both.
+                labelled = node.tag in LABEL_TAGS and node.text == text
+                line = node.getparent() if labelled else node
+                text = text[match.end() :]
+            if kind == "end":
+                if node is line:
+                    break
+                continue
+            if kind == "start":
+                if node.tag in LABEL_TAGS:
+                    break
+                continue
+            if kind == "link":
+                name = " ".join(node.text_content().split())
                 if name:
                     translators.append(name)
+                continue
+            # Plain text between and around the names: separators, or a name
+            # without a link. A dot separator or another label ends the credit.
+            stop = LINE_STOP.search(text)
+            names = text[: stop.start()] if stop else text
+            for name in TRANSLATOR_SEPARATORS.split(names):
+                name = " ".join(name.strip(" :;.").split())
+                if name:
+                    translators.append(name)
+            if stop:
+                break
         return translators or None
 
     def cover_urls(self):
