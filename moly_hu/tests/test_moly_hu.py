@@ -1448,3 +1448,81 @@ def test_find_book_stops_when_aborted():
 
     assert find_book({"title": "Semmi", "authors": [], "identifiers": {}}, print, site, abort=Aborted()) is None
     assert site.fetched == []
+
+
+def translator_of(line):
+    """The translator read off a page with a single edition holding ``line``."""
+    html = (
+        '<div id="content"><div class="items"><div class="edition edition_1">'
+        '<div><a href="/kiadok/hvp">HVP</a>, Budapest, 2024</div>'
+        f"<div>{line}</div></div></div></div>"
+    )
+    return Book(fromstring(html)).translator()
+
+
+def test_translators_are_read_in_every_layout_of_the_edition_line():
+    isbn = "<strong>ISBN</strong>: 9789634700715"
+    dot = '<span class="dot"> · </span>'
+    # The usual layout, and several translators behind the plural label.
+    assert translator_of(
+        f'{isbn}{dot}<strong>Fordította</strong>: <a href="/alkotok/a">A Béla</a>'
+    ) == ["A Béla"]
+    assert translator_of(
+        f'{isbn}{dot}<strong>Fordították</strong>: <a href="/alkotok/a">A Béla</a>'
+        ', <a href="/alkotok/c">C Dóra</a>'
+    ) == ["A Béla", "C Dóra"]
+    # A name wrapped in an element of its own, and a link spelled in full.
+    assert translator_of(
+        f"{isbn}{dot}<strong>Fordította</strong>: "
+        '<span><a href="https://moly.hu/alkotok/a"><span>A Béla</span></a></span>'
+    ) == ["A Béla"]
+    # A translator moly.hu has no creator page for is written as plain text.
+    assert translator_of(
+        f"{isbn}{dot}<strong>Fordította</strong>: A Béla és C Dóra"
+    ) == ["A Béla", "C Dóra"]
+    # The label written as plain text rather than in its own element.
+    assert translator_of(
+        f'{isbn}{dot}Fordította: <a href="/alkotok/a">A Béla</a>'
+    ) == ["A Béla"]
+    # The credits behind the translator's are not taken for translators.
+    assert translator_of(
+        f'{isbn}{dot}<strong>Fordította</strong>: <a href="/alkotok/a">A Béla</a>'
+        f'{dot}<strong>Illusztrálta</strong>: <a href="/alkotok/e">E Fanni</a>'
+    ) == ["A Béla"]
+    assert translator_of(
+        f"{isbn}{dot}<strong>Fordította</strong>: A Béla"
+        f'{dot}Illusztrálta: <a href="/alkotok/e">E Fanni</a>'
+    ) == ["A Béla"]
+    assert translator_of(f"{isbn}") is None
+
+
+def test_editions_outside_an_items_block():
+    # Current pages put the editions straight into the content as "flex
+    # edition" divs. The first "items" block is then the reviews, and reading
+    # it as the edition list gave the first reviewer's name as the publisher
+    # and no translator at all.
+    book = read_book("book_page_adrian_tchaikovsky_pokfeny.htm")
+
+    assert book.title() == "Pókfény"
+    assert book.is_ebook() is True
+    assert book.publisher() == "Fumax"
+    assert book.translator() == ["Habony Gábor"]
+    assert book.isbn() == "9789634701576"
+    assert book.isbns() == ["9789634700715", "9789634701576"]
+    # The ebook line states a bare 2019, the printed one the day.
+    assert book.publication_date() == datetime.date(2019, 4, 25)
+
+
+def test_an_edition_copied_into_a_review_is_not_counted_twice():
+    # The same layout as Pókfény, but a review carries a copy of the ebook
+    # edition. The page's own editions are read, the copy is left out.
+    book = read_book("book_page_chris_beckett_sotet_eden.htm")
+
+    assert book.title() == "Sötét Éden"
+    assert book.series() == ("Sötét Éden", 1)
+    assert book.is_ebook() is True
+    assert book.publisher() == "Agave Könyvek"
+    assert book.translator() == ["Farkas Veronika"]
+    assert book.isbn() == "9789634190615"
+    assert book.isbns() == ["9789634190486", "9789634190615"]
+    assert book.publication_date() == datetime.date(2016, 2, 16)
